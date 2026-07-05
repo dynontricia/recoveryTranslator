@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Recovery Translator</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #f0f4f8;
+            color: #1a202c;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+
+        .screen { display: none; width: 100%; max-width: 480px; }
+        .screen.active { display: block; }
+
+        .card {
+            background: white;
+            border-radius: 16px;
+            padding: 32px 24px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+        }
+
+        h1 { font-size: 24px; font-weight: 700; margin-bottom: 8px; color: #1a202c; }
+        h2 { font-size: 20px; font-weight: 600; margin-bottom: 16px; color: #1a202c; }
+        p  { font-size: 15px; color: #4a5568; margin-bottom: 24px; line-height: 1.5; }
+
+        .logo {
+            font-size: 40px;
+            text-align: center;
+            margin-bottom: 12px;
+        }
+
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-bottom: 12px;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.88; }
+        .btn-primary { background: #4f46e5; color: white; }
+        .btn-secondary { background: #e2e8f0; color: #1a202c; }
+        .btn-danger { background: #e53e3e; color: white; }
+        .btn-success { background: #38a169; color: white; }
+        .btn-sm {
+            display: inline-block;
+            width: auto;
+            padding: 6px 14px;
+            font-size: 14px;
+            margin: 0 4px 0 0;
+        }
+
+        label { display: block; font-size: 14px; font-weight: 500; margin-bottom: 6px; color: #2d3748; }
+
+        input, select {
+            width: 100%;
+            padding: 12px;
+            border: 1.5px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 15px;
+            margin-bottom: 16px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        input:focus, select:focus { border-color: #4f46e5; }
+
+        .error {
+            background: #fff5f5;
+            border: 1px solid #fc8181;
+            color: #c53030;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 14px;
+            margin-bottom: 16px;
+            display: none;
+        }
+
+        .session-code {
+            font-size: 48px;
+            font-weight: 800;
+            text-align: center;
+            letter-spacing: 8px;
+            color: #4f46e5;
+            padding: 16px 0;
+        }
+
+        #qr-container {
+            display: flex;
+            justify-content: center;
+            margin: 16px 0;
+        }
+
+        #qr-container img { border-radius: 8px; }
+
+        .caption-box {
+            background: #f7fafc;
+            border: 1.5px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 20px;
+            min-height: 200px;
+            max-height: 60vh;
+            overflow-y: auto;
+            font-size: 20px;
+            line-height: 1.7;
+            color: #1a202c;
+            margin-bottom: 20px;
+            word-wrap: break-word;
+        }
+
+        .speak-queue { margin-bottom: 20px; }
+
+        .queue-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 12px 14px;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .badge {
+            background: #ebf4ff;
+            color: #2b6cb0;
+            border-radius: 20px;
+            padding: 2px 10px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-right: 8px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #48bb78;
+            display: inline-block;
+            margin-right: 6px;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .status-bar {
+            display: flex;
+            align-items: center;
+            font-size: 14px;
+            color: #4a5568;
+            margin-bottom: 16px;
+        }
+
+        .divider {
+            border: none;
+            border-top: 1px solid #e2e8f0;
+            margin: 20px 0;
+        }
+
+        .small { font-size: 13px; color: #718096; text-align: center; margin-top: 8px; }
+    </style>
+</head>
+<body>
+
+<!-- SCREEN 1: Landing -->
+<div class="screen active" id="screen-landing">
+    <div class="card">
+        <div class="logo">🌐</div>
+        <h1 style="text-align:center">Recovery Translator</h1>
+        <p style="text-align:center">Real-time interpretation for recovery meetings.</p>
+        <button class="btn btn-primary" onclick="show('screen-leader-onboard')">I am a session leader</button>
+        <button class="btn btn-secondary" onclick="show('screen-listener-onboard')">I am a listener</button>
+    </div>
+</div>
+
+<!-- SCREEN 2: Leader onboarding -->
+<div class="screen" id="screen-leader-onboard">
+    <div class="card">
+        <h2>Start a session</h2>
+        <div class="error" id="leader-error"></div>
+
+        <label>Access code</label>
+        <input type="password" id="access-code" placeholder="Enter access code"/>
+
+        <label>OpenAI API key</label>
+        <input type="password" id="api-key" placeholder="sk-..."/>
+
+        <label>Primary spoken language</label>
+        <select id="source-language">
+            <option value="en">English</option>
+            <option value="es">Spanish</option>
+        </select>
+
+        <button class="btn btn-primary" onclick="createSession()">Start session</button>
+        <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
+    </div>
+</div>
+
+<!-- SCREEN 3: Leader live -->
+<div class="screen" id="screen-leader-live">
+    <div class="card">
+        <div class="status-bar">
+            <span class="status-dot"></span>
+            <span>Session live</span>
+        </div>
+
+        <h2 style="text-align:center">Share this code</h2>
+        <div class="session-code" id="display-code"></div>
+        <div id="qr-container"></div>
+        <p class="small">Listeners scan the QR code or go to <strong id="display-url"></strong></p>
+
+        <hr class="divider"/>
+
+        <h2>Speak requests</h2>
+        <div class="speak-queue" id="speak-queue">
+            <p style="font-size:14px;color:#718096">No pending requests.</p>
+        </div>
+
+        <hr class="divider"/>
+
+        <button class="btn btn-danger" onclick="endSession()">End session</button>
+    </div>
+</div>
+
+<!-- SCREEN 4: Listener onboarding -->
+<div class="screen" id="screen-listener-onboard">
+    <div class="card">
+        <h2>Join a session</h2>
+        <div class="error" id="listener-error"></div>
+
+        <label>Session code</label>
+        <input type="text" id="session-code-input" placeholder="ABC123" maxlength="6"
+               oninput="this.value = this.value.toUpperCase()"/>
+
+        <label>Preferred language</label>
+        <select id="listener-language">
+            <option value="english">English</option>
+            <option value="spanish">Español</option>
+        </select>
+
+        <button class="btn btn-primary" onclick="joinSession()">Join</button>
+        <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
+    </div>
+</div>
+
+<!-- SCREEN 5: Listener live -->
+<div class="screen" id="screen-listener-live">
+    <div class="card">
+        <div class="status-bar">
+            <span class="status-dot"></span>
+            <span id="listener-status">Connected</span>
+        </div>
+
+        <div class="caption-box" id="caption-box"></div>
+
+        <button class="btn btn-secondary" id="speak-btn" onclick="requestSpeak()">🎙 Request to speak</button>
+        <p class="small" id="speak-status"></p>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+    let sessionCode = null;
+    let listenerLanguage = null;
+    let signalingWs = null;
+    let eventSource = null;
+
+    function show(screenId) {
+        document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+        document.getElementById(screenId).classList.add('active');
+    }
+
+    function showError(id, msg) {
+        const el = document.getElementById(id);
+        el.textContent = msg;
+        el.style.display = 'block';
+    }
+
+    function hideError(id) {
+        document.getElementById(id).style.display = 'none';
+    }
+
+    // ── LEADER ──────────────────────────────────────────
+
+    async function createSession() {
+        hideError('leader-error');
+        const accessCode    = document.getElementById('access-code').value.trim();
+        const apiKey        = document.getElementById('api-key').value.trim();
+        const sourceLanguage = document.getElementById('source-language').value;
+
+        if (!accessCode || !apiKey) {
+            showError('leader-error', 'Please fill in all fields.');
+            return;
+        }
+
+        try {
+            const res = await fetch('/session/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ accessCode, apiKey, sourceLanguage })
+            });
+
+            const data = await res.json();
+
+            if (!res.ok) {
+                showError('leader-error', data.error || 'Failed to create session.');
+                return;
+            }
+
+            sessionCode = data.sessionCode;
+            startLeaderSession(sessionCode);
+
+        } catch (err) {
+            showError('leader-error', 'Could not connect to server.');
+        }
+    }
+
+    function startLeaderSession(code) {
+        document.getElementById('display-code').textContent = code;
+
+        const url = `${location.origin}?join=${code}`;
+        document.getElementById('display-url').textContent = url;
+
+        document.getElementById('qr-container').innerHTML = '';
+        new QRCode(document.getElementById('qr-container'), {
+            text: url,
+            width: 180,
+            height: 180
+        });
+
+        signalingWs = new WebSocket(`ws://${location.host}?session=${code}&role=leader`);
+
+        signalingWs.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+
+            if (msg.type === 'speak_request') {
+                addQueueItem(msg.id, msg.language);
+            }
+        };
+
+        signalingWs.onclose = () => {
+            console.log('Leader signaling closed');
+        };
+
+        show('screen-leader-live');
+    }
+
+    function addQueueItem(id, language) {
+        const queue = document.getElementById('speak-queue');
+
+        if (queue.querySelector('p')) queue.innerHTML = '';
+
+        const item = document.createElement('div');
+        item.className = 'queue-item';
+        item.id = `queue-${id}`;
+        item.innerHTML = `
+      <span>
+        <span class="badge">${language}</span>
+        Listener wants to speak
+      </span>
+      <span>
+        <button class="btn btn-success btn-sm" onclick="approveSpeak('${id}')">Approve</button>
+        <button class="btn btn-danger btn-sm" onclick="denySpeak('${id}')">Deny</button>
+      </span>
+    `;
+        queue.appendChild(item);
+    }
+
+    function approveSpeak(id) {
+        signalingWs.send(JSON.stringify({ type: 'approve', id }));
+        document.getElementById(`queue-${id}`)?.remove();
+        if (!document.getElementById('speak-queue').children.length) {
+            document.getElementById('speak-queue').innerHTML = '<p style="font-size:14px;color:#718096">No pending requests.</p>';
+        }
+    }
+
+    function denySpeak(id) {
+        signalingWs.send(JSON.stringify({ type: 'deny', id }));
+        document.getElementById(`queue-${id}`)?.remove();
+        if (!document.getElementById('speak-queue').children.length) {
+            document.getElementById('speak-queue').innerHTML = '<p style="font-size:14px;color:#718096">No pending requests.</p>';
+        }
+    }
+
+    function endSession() {
+        if (signalingWs) signalingWs.send(JSON.stringify({ type: 'end_session' }));
+        if (signalingWs) signalingWs.close();
+        show('screen-landing');
+    }
+
+    // ── LISTENER ─────────────────────────────────────────
+
+    function joinSession() {
+        hideError('listener-error');
+        const code = document.getElementById('session-code-input').value.trim().toUpperCase();
+        listenerLanguage = document.getElementById('listener-language').value;
+
+        if (!code || code.length !== 6) {
+            showError('listener-error', 'Please enter a valid 6-character session code.');
+            return;
+        }
+
+        sessionCode = code;
+        startListenerSession(code, listenerLanguage);
+    }
+
+    function startListenerSession(code, language) {
+        const captionBox = document.getElementById('caption-box');
+        captionBox.textContent = '';
+
+        eventSource = new EventSource(`/stream/${code}/${language}`);
+
+        eventSource.onmessage = (e) => {
+            const { text } = JSON.parse(e.data);
+            captionBox.textContent += text;
+            captionBox.scrollTop = captionBox.scrollHeight;
+        };
+
+        eventSource.onerror = () => {
+            document.getElementById('listener-status').textContent = 'Reconnecting...';
+        };
+
+        eventSource.onopen = () => {
+            document.getElementById('listener-status').textContent = 'Connected';
+        };
+
+        signalingWs = new WebSocket(`ws://${location.host}?session=${code}&role=listener`);
+
+        signalingWs.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+
+            if (msg.type === 'approved') {
+                document.getElementById('speak-status').textContent = 'You are approved — speak now!';
+                document.getElementById('speak-btn').textContent = '⏹ Done speaking';
+                document.getElementById('speak-btn').onclick = doneSpeaking;
+            }
+
+            if (msg.type === 'denied') {
+                document.getElementById('speak-status').textContent = 'Request was not approved.';
+                document.getElementById('speak-btn').textContent = '🎙 Request to speak';
+                document.getElementById('speak-btn').onclick = requestSpeak;
+            }
+        };
+
+        show('screen-listener-live');
+    }
+
+    function requestSpeak() {
+        if (!signalingWs || signalingWs.readyState !== WebSocket.OPEN) return;
+        signalingWs.send(JSON.stringify({ type: 'request_speak', language: listenerLanguage }));
+        document.getElementById('speak-status').textContent = 'Request sent — waiting for approval...';
+        document.getElementById('speak-btn').disabled = true;
+    }
+
+    function doneSpeaking() {
+        if (!signalingWs || signalingWs.readyState !== WebSocket.OPEN) return;
+        signalingWs.send(JSON.stringify({ type: 'done_speaking' }));
+        document.getElementById('speak-status').textContent = '';
+        document.getElementById('speak-btn').textContent = '🎙 Request to speak';
+        document.getElementById('speak-btn').onclick = requestSpeak;
+        document.getElementById('speak-btn').disabled = false;
+    }
+
+    // ── AUTO-JOIN via URL param ───────────────────────────
+    const urlParams = new URLSearchParams(location.search);
+    if (urlParams.has('join')) {
+        document.getElementById('session-code-input').value = urlParams.get('join');
+        show('screen-listener-onboard');
+    }
+</script>
+</body>
+</html>
