@@ -22,7 +22,6 @@
         .screen.active { display: block; }
 
         .card {
-            background: white;
             border-radius: 16px;
             padding: 32px 24px;
             box-shadow: 0 4px 24px rgba(0,0,0,0.08);
@@ -32,7 +31,7 @@
         h2 { font-size: 20px; font-weight: 600; margin-bottom: 16px; color: #1a202c; }
         p  { font-size: 15px; color: #4a5568; margin-bottom: 24px; line-height: 1.5; }
 
-        .logo {
+        .icon {
             font-size: 40px;
             text-align: center;
             margin-bottom: 12px;
@@ -173,15 +172,27 @@
             margin: 20px 0;
         }
 
+        .logo {
+            position: absolute;
+            justify-content: left;
+            margin-top: 15px;
+            top: 0px;
+            left: 0px;
+        }
+
         .small { font-size: 13px; color: #718096; text-align: center; margin-top: 8px; }
     </style>
 </head>
 <body>
 
+<div class="logo">
+    <img src="/logo.png" style="width:100%;max-width:320px;display:block;margin:0 auto 8px;"/>
+</div>
+
 <!-- SCREEN 1: Landing -->
 <div class="screen active" id="screen-landing">
     <div class="card">
-        <div class="logo">🌐</div>
+        <div class="icon">🌐</div>
         <h1 style="text-align:center">Recovery Translator</h1>
         <p style="text-align:center">Real-time interpretation for recovery meetings.</p>
         <button class="btn btn-primary" onclick="show('screen-leader-onboard')">I am a session leader</button>
@@ -232,6 +243,7 @@
             <p style="font-size:14px;color:#718096">No pending requests.</p>
         </div>
 
+        <button class="btn btn-secondary" id="resume-btn" style="display:none" onclick="resumeSession()">▶ Resume main session</button>
         <hr class="divider"/>
 
         <button class="btn btn-danger" onclick="endSession()">End session</button>
@@ -276,6 +288,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
+    let leaderDataChannel = null;
     let sessionCode = null;
     let listenerLanguage = null;
     let signalingWs = null;
@@ -301,12 +314,17 @@
     async function createSession() {
         hideError('leader-error');
         const accessCode    = document.getElementById('access-code').value.trim();
-        const apiKey        = document.getElementById('api-key').value.trim();
+        let apiKey        = document.getElementById('api-key').value.trim();
         const sourceLanguage = document.getElementById('source-language').value;
 
-        if (!accessCode || !apiKey) {
+        //if (!accessCode || !apiKey) {
+        if (!accessCode) {
             showError('leader-error', 'Please fill in all fields.');
             return;
+        }
+
+        if(!apiKey) {
+            apiKey = 'default-api-key';
         }
 
         try {
@@ -331,7 +349,7 @@
         }
     }
 
-    function startLeaderSession(code) {
+    async function startLeaderSession(code) {
         document.getElementById('display-code').textContent = code;
 
         const url = `${location.origin}?join=${code}`;
@@ -346,11 +364,24 @@
 
         signalingWs = new WebSocket(`ws://${location.host}?session=${code}&role=leader`);
 
-        signalingWs.onmessage = (event) => {
+        signalingWs.onmessage = async (event) => {
             const msg = JSON.parse(event.data);
 
             if (msg.type === 'speak_request') {
                 addQueueItem(msg.id, msg.language);
+            }
+            if (msg.type === 'flip_language') {
+                if (leaderDataChannel && leaderDataChannel.readyState === 'open') {
+                    leaderDataChannel.send(JSON.stringify({
+                        type: 'session.update',
+                        session: {
+                            audio: {
+                                output: { language: msg.language }
+                            }
+                        }
+                    }));
+                    console.log('Flipped output language to:', msg.language);
+                }
             }
         };
 
@@ -358,7 +389,79 @@
             console.log('Leader signaling closed');
         };
 
+        await startWebRTC(code);
         show('screen-leader-live');
+    }
+
+    async function startWebRTC(code) {
+        // Get client secret from our server
+        const res = await fetch('/session/client-secret', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionCode: code })
+        });
+
+        const data = await res.json();
+        const clientSecret = data.value;
+
+        // Create peer connection
+        window.leaderPc = new RTCPeerConnection();
+        const pc = window.leaderPc;
+
+        // Capture mic and add to peer connection
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        pc.addTrack(stream.getAudioTracks()[0], stream);
+
+        // Listen for transcript deltas on the data channel
+        const dataChannel = pc.createDataChannel('oai-events');
+        leaderDataChannel = dataChannel;
+        dataChannel.onmessage = (e) => {
+            const event = JSON.parse(e.data);
+
+            if (event.type === 'session.updated') {
+                console.log('Session updated confirmed:', event.session.audio.output.language);
+                if (signalingWs.readyState === WebSocket.OPEN) {
+                    signalingWs.send(JSON.stringify({ type: 'flip_confirmed' }));
+                }
+            }
+
+            if (event.type === 'session.input_transcript.delta') {
+                signalingWs.send(JSON.stringify({
+                    type: 'transcript',
+                    direction: 'input',
+                    delta: event.delta
+                }));
+            }
+
+            if (event.type === 'session.output_transcript.delta') {
+                signalingWs.send(JSON.stringify({
+                    type: 'transcript',
+                    direction: 'output',
+                    delta: event.delta
+                }));
+            }
+        };
+
+        // Create and send SDP offer to OpenAI
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        const sdpResponse = await fetch(
+            'https://api.openai.com/v1/realtime/translations/calls',
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${clientSecret}`,
+                    'Content-Type': 'application/sdp'
+                },
+                body: offer.sdp
+            }
+        );
+
+        const answerSdp = await sdpResponse.text();
+        await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+
+        console.log('WebRTC connected to OpenAI');
     }
 
     function addQueueItem(id, language) {
@@ -388,6 +491,7 @@
         if (!document.getElementById('speak-queue').children.length) {
             document.getElementById('speak-queue').innerHTML = '<p style="font-size:14px;color:#718096">No pending requests.</p>';
         }
+        document.getElementById('resume-btn').style.display = 'block';
     }
 
     function denySpeak(id) {
@@ -398,9 +502,15 @@
         }
     }
 
+    function resumeSession() {
+        signalingWs.send(JSON.stringify({ type: 'resume_primary' }));
+        document.getElementById('resume-btn').style.display = 'none';
+    }
+
     function endSession() {
         if (signalingWs) signalingWs.send(JSON.stringify({ type: 'end_session' }));
         if (signalingWs) signalingWs.close();
+        if (window.leaderPc) { window.leaderPc.close(); window.leaderPc = null; }
         show('screen-landing');
     }
 
@@ -427,9 +537,28 @@
         eventSource = new EventSource(`/stream/${code}/${language}`);
 
         eventSource.onmessage = (e) => {
-            const { text } = JSON.parse(e.data);
-            captionBox.textContent += text;
-            captionBox.scrollTop = captionBox.scrollHeight;
+            const data = JSON.parse(e.data);
+
+            if (data.type === 'session_ended') {
+                eventSource.close();
+                if (signalingWs) signalingWs.close();
+                const box = document.getElementById('caption-box');
+                box.style.display = 'flex';
+                box.style.alignItems = 'center';
+                box.style.justifyContent = 'center';
+                box.style.color = '#718096';
+                box.style.fontSize = '18px';
+                box.innerText = 'This session has ended. Thank you!';
+                document.getElementById('listener-status').textContent = 'Session ended';
+                document.getElementById('speak-btn').style.display = 'none';
+                document.getElementById('speak-status').textContent = '';
+                return;
+            }
+
+            if (!data.text) return;
+            const box = document.getElementById('caption-box');
+            box.innerText += data.text;
+            box.scrollTop = box.scrollHeight;
         };
 
         eventSource.onerror = () => {
@@ -442,13 +571,14 @@
 
         signalingWs = new WebSocket(`ws://${location.host}?session=${code}&role=listener`);
 
-        signalingWs.onmessage = (event) => {
+        signalingWs.onmessage = async (event) => {
             const msg = JSON.parse(event.data);
 
             if (msg.type === 'approved') {
                 document.getElementById('speak-status').textContent = 'You are approved — speak now!';
                 document.getElementById('speak-btn').textContent = '⏹ Done speaking';
                 document.getElementById('speak-btn').onclick = doneSpeaking;
+                document.getElementById('speak-btn').disabled = false;
             }
 
             if (msg.type === 'denied') {
@@ -461,12 +591,85 @@
         show('screen-listener-live');
     }
 
+    /*async function startListenerWebRTC() {
+        const res = await fetch('/session/listener-secret', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionCode })
+        });
+
+        const data = await res.json();
+        console.log('listener-secret response:', res.status, JSON.stringify(data));
+        const clientSecret = data.value;
+
+        listenerPc = new RTCPeerConnection();
+
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        listenerPc.addTrack(stream.getAudioTracks()[0], stream);
+
+        const dataChannel = listenerPc.createDataChannel('oai-events');
+        dataChannel.onmessage = (e) => {
+            const event = JSON.parse(e.data);
+
+            if (event.type === 'session.input_transcript.delta') {
+
+                signalingWs.send(JSON.stringify({
+                    type: 'listener_transcript',
+                    direction: 'input',
+                    delta: event.delta
+                }));
+            }
+
+            if (event.type === 'session.output_transcript.delta') {
+                console.log('listener_transcript event:', event.type, 'direction:', event.type === 'session.input_transcript.delta' ? 'input' : 'output', 'signalingWs state:', signalingWs.readyState);
+                signalingWs.send(JSON.stringify({
+                    type: 'listener_transcript',
+                    direction: 'output',
+                    delta: event.delta
+                }));
+            }
+        };
+
+        const offer = await listenerPc.createOffer();
+        await listenerPc.setLocalDescription(offer);
+
+        const sdpResponse = await fetch(
+            'https://api.openai.com/v1/realtime/translations/calls',
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${clientSecret}`,
+                    'Content-Type': 'application/sdp'
+                },
+                body: offer.sdp
+            }
+        );
+
+        const answerSdp = await sdpResponse.text();
+        await listenerPc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+
+        console.log('Listener WebRTC connected');
+    }*/
+
     function requestSpeak() {
         if (!signalingWs || signalingWs.readyState !== WebSocket.OPEN) return;
         signalingWs.send(JSON.stringify({ type: 'request_speak', language: listenerLanguage }));
         document.getElementById('speak-status').textContent = 'Request sent — waiting for approval...';
         document.getElementById('speak-btn').disabled = true;
     }
+
+    /*function doneSpeaking() {
+        if (listenerPc) {
+            listenerPc.close();
+            listenerPc = null;
+        }
+        if (!signalingWs || signalingWs.readyState !== WebSocket.OPEN) return;
+        signalingWs.send(JSON.stringify({ type: 'done_speaking' }));
+        document.getElementById('speak-status').textContent = '';
+        document.getElementById('speak-btn').textContent = '🎙 Request to speak';
+        document.getElementById('speak-btn').onclick = requestSpeak;
+        document.getElementById('speak-btn').disabled = false;
+    }*/
 
     function doneSpeaking() {
         if (!signalingWs || signalingWs.readyState !== WebSocket.OPEN) return;
