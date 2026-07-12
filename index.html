@@ -14,9 +14,18 @@
             color: #1a202c;
             min-height: 100vh;
             display: flex;
+            flex-wrap: wrap;
             align-items: center;
             justify-content: center;
             padding: 16px;
+        }
+
+        @media (max-width: 600px) {
+            body {
+                align-items: flex-start;
+                justify-content: center;
+                padding-top: 0;
+            }
         }
 
         .screen { display: none; width: 100%; max-width: 480px; }
@@ -175,10 +184,32 @@
 
         .logo {
             position: absolute;
-            justify-content: left;
-            margin-top: 15px;
             top: 0px;
             left: 0px;
+            margin-top: 15px;
+        }
+
+        .logo img {
+            max-width: 320px;
+            width: 100%;
+        }
+
+        @media (max-width: 600px) {
+            .logo {
+                position: relative;
+                top: auto;
+                left: auto;
+                display: flex;
+                justify-content: center;
+                width: 100%;
+                padding: 16px 0 8px;
+                margin-bottom: 8px;
+            }
+
+            .logo img {
+                width: 200px;
+                max-width: 60%;
+            }
         }
 
         .small { font-size: 13px; color: #718096; text-align: center; margin-top: 8px; }
@@ -187,103 +218,106 @@
 <body>
 
 <div class="logo">
-    <img src="/logo.png" style="width:100%;max-width:320px;display:block;margin:0 auto 8px;"/>
+    <img src="/logo.png"/>
 </div>
 
-<!-- SCREEN 1: Landing -->
-<div class="screen active" id="screen-landing">
-    <div class="card">
-        <div class="icon">🌐</div>
-        <h1 style="text-align:center">Recovery Translator</h1>
-        <p style="text-align:center">Real-time interpretation for recovery meetings.</p>
-        <button class="btn btn-primary" onclick="show('screen-leader-onboard')">I am a session leader</button>
-        <button class="btn btn-secondary" onclick="show('screen-listener-onboard')">I am a listener</button>
-    </div>
-</div>
+<div style="width:100%;max-width:480px;">
 
-<!-- SCREEN 2: Leader onboarding -->
-<div class="screen" id="screen-leader-onboard">
-    <div class="card">
-        <h2>Start a session</h2>
-        <div class="error" id="leader-error"></div>
-
-        <label>Access code</label>
-        <input type="password" id="access-code" placeholder="Enter access code"/>
-
-        <label>OpenAI API key</label>
-        <input type="password" id="api-key" placeholder="sk-..."/>
-
-        <label>Primary spoken language</label>
-        <select id="source-language">
-            <option value="en">English</option>
-            <option value="es">Spanish</option>
-        </select>
-
-        <button class="btn btn-primary" onclick="createSession()">Start session</button>
-        <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
-    </div>
-</div>
-
-<!-- SCREEN 3: Leader live -->
-<div class="screen" id="screen-leader-live">
-    <div class="card">
-        <div class="status-bar">
-            <span class="status-dot"></span>
-            <span>Session live</span>
+    <!-- SCREEN 1: Landing -->
+    <div class="screen active" id="screen-landing">
+        <div class="card">
+            <div class="icon">🌐</div>
+            <h1 style="text-align:center">Recovery Translator</h1>
+            <p style="text-align:center">Real-time interpretation for recovery meetings.</p>
+            <button class="btn btn-primary" onclick="show('screen-leader-onboard')">I am a session leader</button>
+            <button class="btn btn-secondary" onclick="show('screen-listener-onboard')">I am a listener</button>
         </div>
-
-        <h2 style="text-align:center">Share this code</h2>
-        <div class="session-code" id="display-code"></div>
-        <div id="qr-container"></div>
-        <p class="small">Listeners scan the QR code or go to <strong id="display-url"></strong></p>
-
-        <hr class="divider"/>
-
-        <h2>Speak requests</h2>
-        <div class="speak-queue" id="speak-queue">
-            <p style="font-size:14px;color:#718096">No pending requests.</p>
-        </div>
-
-        <button class="btn btn-secondary" id="resume-btn" style="display:none" onclick="resumeSession()">▶ Resume main session</button>
-        <hr class="divider"/>
-
-        <button class="btn btn-danger" onclick="endSession()">End session</button>
     </div>
-</div>
 
-<!-- SCREEN 4: Listener onboarding -->
-<div class="screen" id="screen-listener-onboard">
-    <div class="card">
-        <h2>Join a session</h2>
-        <div class="error" id="listener-error"></div>
+    <!-- SCREEN 2: Leader onboarding -->
+    <div class="screen" id="screen-leader-onboard">
+        <div class="card">
+            <h2>Start a session</h2>
+            <div class="error" id="leader-error"></div>
 
-        <label>Session code</label>
-        <input type="text" id="session-code-input" placeholder="ABC123" maxlength="6"
-               oninput="this.value = this.value.toUpperCase()"/>
+            <label>Access code</label>
+            <input type="password" id="access-code" placeholder="Enter access code"/>
 
-        <label>Preferred language</label>
-        <select id="listener-language">
-            <option value="english">English</option>
-            <option value="spanish">Español</option>
-        </select>
+            <label>OpenAI API key</label>
+            <input type="password" id="api-key" placeholder="sk-..."/>
 
-        <button class="btn btn-primary" onclick="joinSession()">Join</button>
-        <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
-    </div>
-</div>
+            <label>Primary spoken language</label>
+            <select id="source-language">
+                <option value="en">English</option>
+                <option value="es">Spanish</option>
+            </select>
 
-<!-- SCREEN 5: Listener live -->
-<div class="screen" id="screen-listener-live">
-    <div class="card">
-        <div class="status-bar">
-            <span class="status-dot"></span>
-            <span id="listener-status">Connected</span>
+            <button class="btn btn-primary" onclick="createSession()">Start session</button>
+            <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
         </div>
+    </div>
 
-        <div class="caption-box" id="caption-box"></div>
+    <!-- SCREEN 3: Leader live -->
+    <div class="screen" id="screen-leader-live">
+        <div class="card">
+            <div class="status-bar">
+                <span class="status-dot"></span>
+                <span>Session live</span>
+            </div>
 
-        <button class="btn btn-secondary" id="speak-btn" onclick="requestSpeak()">🎙 Request to speak</button>
-        <p class="small" id="speak-status"></p>
+            <h2 style="text-align:center">Share this code</h2>
+            <div class="session-code" id="display-code"></div>
+            <div id="qr-container"></div>
+            <p class="small">Listeners scan the QR code or go to <strong id="display-url"></strong></p>
+
+            <hr class="divider"/>
+
+            <h2>Speak requests</h2>
+            <div class="speak-queue" id="speak-queue">
+                <p style="font-size:14px;color:#718096">No pending requests.</p>
+            </div>
+
+            <button class="btn btn-secondary" id="resume-btn" style="display:none" onclick="resumeSession()">▶ Resume main session</button>
+            <hr class="divider"/>
+
+            <button class="btn btn-danger" onclick="endSession()">End session</button>
+        </div>
+    </div>
+
+    <!-- SCREEN 4: Listener onboarding -->
+    <div class="screen" id="screen-listener-onboard">
+        <div class="card">
+            <h2>Join a session</h2>
+            <div class="error" id="listener-error"></div>
+
+            <label>Session code</label>
+            <input type="text" id="session-code-input" placeholder="ABC123" maxlength="6"
+                   oninput="this.value = this.value.toUpperCase()"/>
+
+            <label>Preferred language</label>
+            <select id="listener-language">
+                <option value="english">English</option>
+                <option value="spanish">Español</option>
+            </select>
+
+            <button class="btn btn-primary" onclick="joinSession()">Join</button>
+            <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
+        </div>
+    </div>
+
+    <!-- SCREEN 5: Listener live -->
+    <div class="screen" id="screen-listener-live">
+        <div class="card">
+            <div class="status-bar">
+                <span class="status-dot"></span>
+                <span id="listener-status">Connected</span>
+            </div>
+
+            <div class="caption-box" id="caption-box"></div>
+
+            <button class="btn btn-secondary" id="speak-btn" onclick="requestSpeak()">🎙 Request to speak</button>
+            <p class="small" id="speak-status"></p>
+        </div>
     </div>
 </div>
 
