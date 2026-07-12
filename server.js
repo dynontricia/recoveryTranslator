@@ -47,8 +47,12 @@ function broadcast(sessionCode, language, text) {
 
 const server = http.createServer((req, res) => {
 
+    const parsedUrl = new URL(req.url, `http://localhost:${PORT}`);
+    const pathname = parsedUrl.pathname;
+    console.log(pathname);
+
     // Serve the attendee web page
-    if (req.url === '/' || req.url === '/index.html') {
+    if (pathname === '/' || pathname === '/index.html') {
         fs.readFile('./index.html', (err, data) => {
             if (err) {
                 res.writeHead(500);
@@ -60,7 +64,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    else if (req.method === 'POST' && req.url === '/session/client-secret') {
+    else if (req.method === 'POST' && pathname === '/session/client-secret') {
         let body = '';
         req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', async () => {
@@ -100,7 +104,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    else if (req.method === 'POST' && req.url === '/session/create') {
+    else if (req.method === 'POST' && pathname === '/session/create') {
         let body = '';
 
         req.on('data', chunk => {
@@ -127,8 +131,8 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    else if (req.method === 'GET' && req.url.startsWith('/stream/')) {
-        const parts = req.url.split('/');
+    else if (req.method === 'GET' && pathname.startsWith('/stream/')) {
+        const parts = pathname.split('/');
         const sessionCode = parts[2];
         const language = parts[3];
 
@@ -160,7 +164,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    else if (req.url === '/logo.png') {
+    else if (pathname === '/logo.png') {
         fs.readFile('./recoveryTrans.png', (err, data) => {
             if (err) { res.writeHead(404); res.end(); return; }
             res.writeHead(200, { 'Content-Type': 'image/png' });
@@ -168,7 +172,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    else if (req.method === 'POST' && req.url === '/session/listener-secret') {
+    else if (req.method === 'POST' && pathname === '/session/listener-secret') {
         let body = '';
         req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', async () => {
