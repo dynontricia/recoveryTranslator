@@ -14,6 +14,7 @@
             color: #1a202c;
             min-height: 100vh;
             display: flex;
+            flex-direction: column;
             flex-wrap: wrap;
             align-items: center;
             justify-content: center;
@@ -213,6 +214,89 @@
         }
 
         .small { font-size: 13px; color: #718096; text-align: center; margin-top: 8px; }
+
+        footer {
+            width: 100vw;
+            text-align: center;
+            padding: 24px 40px 16px;
+            font-size: 20px;
+            color: #718096;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 8px 48px;
+            position: absolute;
+            bottom: 20px;
+        }
+
+        footer a {
+            color: #4f46e5;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+
+        footer a:hover { text-decoration: underline; }
+
+        @media (max-width: 600px) {
+            footer {
+                flex-direction: column;
+                align-items: center;
+                gap: 12px;
+                padding: 20px 16px 24px;
+                font-size: 20px;
+                width: 100%;
+                position: relative;
+                bottom: auto;
+            }
+        }
+
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+
+        .modal-overlay.active { display: flex; }
+
+        .modal {
+            background: white;
+            border-radius: 16px;
+            padding: 28px 24px;
+            max-width: 80%;
+            width: 100%;
+            max-height: 85vh;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        @media (max-width: 600px) {
+            .modal {
+                max-width: 480px;
+                max-height: 90%;
+            }
+        }
+
+        .modal h2 { margin-bottom: 16px; }
+        .modal h3 { font-size: 16px; font-weight: 600; margin: 20px 0 8px; color: #2d3748; }
+        .modal p { font-size: 14px; color: #4a5568; margin-bottom: 12px; line-height: 1.6; }
+        .modal ol { padding-left: 20px; margin-bottom: 16px; }
+        .modal ol li { font-size: 14px; color: #4a5568; margin-bottom: 8px; line-height: 1.6; }
+        .modal-close {
+            position: absolute;
+            top: 16px; right: 16px;
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            color: #718096;
+            padding: 4px 8px;
+        }
     </style>
 </head>
 <body>
@@ -318,6 +402,95 @@
             <button class="btn btn-secondary" id="speak-btn" onclick="requestSpeak()">🎙 Request to speak</button>
             <p class="small" id="speak-status"></p>
         </div>
+    </div>
+</div>
+
+<!-- FOOTER -->
+<footer>
+    <a href="#" onclick="openModal('modal-instructions')">Step-by-Step Instructions</a>
+    <a href="#" onclick="openModal('modal-about')">About</a>
+    <a href="#" onclick="openModal('modal-privacy')">Privacy Policy</a>
+    <a href="mailto:dynontricia@gmail.com">Contact Us</a>
+</footer>
+
+<!-- MODAL: Privacy Policy -->
+<div class="modal-overlay" id="modal-privacy">
+    <div class="modal">
+        <button class="modal-close" onclick="closeModal('modal-privacy')">✕</button>
+        <h2>Privacy Policy</h2>
+        <p>Recovery Translator is a free tool built to support recovery communities. We take your privacy seriously.</p>
+        <h3>Audio & Transcripts</h3>
+        <p>Audio is streamed directly from your device to OpenAI's translation API for real-time processing. Recovery Translator does not store, record, or retain any audio or transcript data on its servers.</p>
+        <h3>OpenAI Data Policy</h3>
+        <p>Audio and transcripts are processed by OpenAI and may be retained by OpenAI for up to 30 days for abuse monitoring purposes. This monitoring is automated and is designed to detect violations of OpenAI's usage policies — for example, using the API to generate harmful content, facilitate illegal activity, or circumvent safety systems. Recovery Translator's use case — spoken language interpretation for recovery meetings — does not fall into any of these categories.</p>
+        <p>If no abuse is detected by OpenAI's automated systems, no human at OpenAI will review your audio or transcripts. Your session content is not read, listened to, or accessed by any person.</p>
+        <p>OpenAI does not use API data to train its models. For more information, visit openai.com/privacy.</p>
+        <h3>Session Data</h3>
+        <p>Session codes and connection data exist only in memory for the duration of your session and are deleted when the session ends.</p>
+        <h3>No Accounts, No Tracking</h3>
+        <p>Recovery Translator does not require accounts, does not use cookies, and does not track users in any way.</p>
+        <h3>Contact</h3>
+        <p>Questions about privacy? Email us at <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
+    </div>
+</div>
+
+<!-- MODAL: Instructions -->
+<div class="modal-overlay" id="modal-instructions">
+    <div class="modal">
+        <button class="modal-close" onclick="closeModal('modal-instructions')">✕</button>
+        <h2>Step-by-Step Instructions</h2>
+
+        <h3>Session Leaders</h3>
+        <ol>
+            <li>Open recoverytranslator.com and tap <strong>I am a session leader.</strong></li>
+            <li>Enter your access code, your OpenAI API key, and select the primary spoken language. Tap <strong>Start session.</strong></li>
+            <li>Share the QR code or session code with your attendees.</li>
+            <li>Speak normally — captions and translation are live.</li>
+            <li>When a listener requests to speak, tap <strong>Approve</strong> or <strong>Deny</strong> on your screen.</li>
+            <li>When the approved speaker is finished, tap <strong>Resume main session.</strong></li>
+            <li>When the meeting ends, tap <strong>End session.</strong></li>
+        </ol>
+
+        <h3>Listeners — Primary Language</h3>
+        <ol>
+            <li>Scan the QR code or go to recoverytranslator.com and tap <strong>I am a listener.</strong></li>
+            <li>Enter the session code, select your language, and tap <strong>Join.</strong></li>
+            <li>Captions will appear automatically as people speak.</li>
+            <li>To address the group, tap <strong>Request to speak</strong> and wait for approval.</li>
+            <li>When approved, speak clearly. Tap <strong>Done speaking</strong> when finished.</li>
+        </ol>
+
+        <h3>Listeners — Second Language</h3>
+        <ol>
+            <li>Scan the QR code or go to recoverytranslator.com and tap <strong>I am a listener.</strong></li>
+            <li>Enter the session code, select <strong>Español</strong>, and tap <strong>Join.</strong></li>
+            <li>Translated captions will appear automatically as people speak.</li>
+            <li>To address the group, tap <strong>Request to speak</strong> and wait for approval.</li>
+            <li>When approved, speak clearly into your phone's microphone. Tap <strong>Done speaking</strong> when finished.</li>
+        </ol>
+    </div>
+</div>
+
+<!-- MODAL: About -->
+<div class="modal-overlay" id="modal-about">
+    <div class="modal">
+        <button class="modal-close" onclick="closeModal('modal-about')">✕</button>
+        <h2>About Recovery Translator</h2>
+        <p>Recovery Translator provides real-time spoken language interpretation for recovery meetings, area committees, and service assemblies — making meetings accessible to everyone regardless of the language they speak.</p>
+
+        <h3>How It Works</h3>
+        <p>The session leader opens a session from their device and shares a QR code with attendees. As the leader speaks, their words are transcribed and translated in real time. Attendees read captions on their phones in their preferred language. No special equipment is needed — just a phone and a browser.</p>
+        <p>Listeners who speak a different language can also request to speak. The session leader approves the request, and the system automatically translates their words back to the room's primary language.</p>
+
+        <h3>Getting Access</h3>
+        <p>Session leaders need an access code and an OpenAI API key to start a session. Listeners only need the session code provided by the leader — no account or API key required.</p>
+        <p>To request an access code, contact us at <a href="mailto:your@email.com">your@email.com</a>.</p>
+
+        <h3>Estimated Cost</h3>
+        <p>Recovery Translator uses OpenAI's real-time translation API, billed directly to the session leader's OpenAI account. The estimated cost is <strong>less than $0.05 per minute</strong> of active session time — typically under $5 for a two-hour meeting.</p>
+
+        <h3>Built for Recovery</h3>
+        <p>This tool was built by and for the recovery community, with anonymity and accessibility in mind. It is free to use and open source.</p>
     </div>
 </div>
 
@@ -722,6 +895,14 @@
     if (urlParams.has('join')) {
         document.getElementById('session-code-input').value = urlParams.get('join');
         show('screen-listener-onboard');
+    }
+
+    function openModal(id) {
+        document.getElementById(id).classList.add('active');
+    }
+
+    function closeModal(id) {
+        document.getElementById(id).classList.remove('active');
     }
 </script>
 </body>
