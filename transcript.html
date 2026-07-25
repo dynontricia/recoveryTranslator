@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>">
+    <title>Transcript — Recovery Translator</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #ffffff; color: #111827; height: 100vh; display: flex; flex-direction: column;
+        }
+        .bar {
+            display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+            border-bottom: 1px solid #e5e7eb; background: #f9fafb; flex-wrap: wrap;
+        }
+        .bar strong { font-size: 14px; }
+        .bar select { padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; }
+        .bar .status { margin-left: auto; font-size: 12px; color: #6b7280; }
+        .transcript {
+            flex: 1; overflow-y: auto; padding: 28px 32px; font-size: 24px;
+            line-height: 1.7; white-space: pre-wrap; word-wrap: break-word;
+        }
+        .notice {
+            display: none; margin: 20px 32px; padding: 18px; border-radius: 10px;
+            background: #eff6ff; border: 1.5px solid #93c5fd; color: #1e40af;
+            font-size: 18px; font-weight: 600; text-align: center;
+        }
+        .notice.active { display: block; }
+    </style>
+</head>
+<body>
+<div class="bar">
+    <strong>Live Transcript</strong>
+    <select id="lang-select">
+        <option value="english">English</option>
+        <option value="spanish">Español</option>
+    </select>
+    <span class="status" id="status">Connecting…</span>
+</div>
+<div class="notice" id="notice">🔊 A Spanish speaker has the floor — please listen to the room.</div>
+<div class="transcript" id="transcript"></div>
+
+<script>
+    const params = new URLSearchParams(location.search);
+    const code = (params.get('session') || '').toUpperCase();
+    let lang = params.get('lang') === 'spanish' ? 'spanish' : 'english';
+    let es = null;
+
+    const select = document.getElementById('lang-select');
+    const box = document.getElementById('transcript');
+    const statusEl = document.getElementById('status');
+    const notice = document.getElementById('notice');
+    select.value = lang;
+
+    function connect() {
+        if (es) es.close();
+        box.textContent = '';
+        notice.classList.remove('active');
+        if (!code) { statusEl.textContent = 'No session code'; return; }
+
+        es = new EventSource(`/stream/${code}/${lang}`);
+        es.onopen = () => { statusEl.textContent = 'Connected'; };
+        es.onerror = () => { statusEl.textContent = 'Reconnecting…'; };
+        es.onmessage = (e) => {
+            const data = JSON.parse(e.data);
+            if (data.type === 'session_ended') {
+                box.innerText += '\n\n[Session ended]'; es.close(); statusEl.textContent = 'Ended'; return;
+            }
+            if (data.type === 'spanish_turn') {
+                // Only meaningful on the Spanish transcript.
+                if (lang === 'spanish') notice.classList.toggle('active', data.active);
+                return;
+            }
+            if (!data.text) return;
+            box.innerText += data.text; box.scrollTop = box.scrollHeight;
+        };
+    }
+
+    select.addEventListener('change', () => { lang = select.value; connect(); });
+    connect();
+</script>
+</body>
+</html>

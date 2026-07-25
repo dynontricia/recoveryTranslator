@@ -7,301 +7,162 @@
     <title>Recovery Translator</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-
-        html {
-            height: 100%;
-        }
-
+        html { height: 100%; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: #f0f4f8;
-            color: #1a202c;
-            min-height: 100%;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
+            background: #f0f4f8; color: #1a202c;
+            min-height: 100%; height: 100%;
+            display: flex; flex-direction: column; align-items: center;
             padding: 16px 16px 0;
         }
-
-        @media (max-width: 600px) {
-            body { padding-top: 0; }
-        }
+        @media (max-width: 600px) { body { padding-top: 0; } }
 
         .screen { display: none; width: 100%; max-width: 480px; }
         .screen.active { display: block; }
+        .screen.wide { max-width: 96vw; }
 
         .card {
-            border-radius: 16px;
-            padding: 32px 24px;
+            border-radius: 16px; padding: 32px 24px;
             box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+            background: white; position: relative; z-index: 2;
         }
-
-        h1 { font-size: 24px; font-weight: 700; margin-bottom: 8px; color: #1a202c; }
-        h2 { font-size: 20px; font-weight: 600; margin-bottom: 16px; color: #1a202c; }
+        h1 { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
+        h2 { font-size: 20px; font-weight: 600; margin-bottom: 16px; }
         p  { font-size: 15px; color: #4a5568; margin-bottom: 24px; line-height: 1.5; }
-
-        .icon {
-            font-size: 40px;
-            text-align: center;
-            margin-bottom: 12px;
-        }
+        .icon { font-size: 40px; text-align: center; margin-bottom: 12px; }
 
         .btn {
-            display: block;
-            width: 100%;
-            padding: 14px;
-            border: none;
-            border-radius: 10px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            margin-bottom: 12px;
-            transition: opacity 0.2s;
+            display: block; width: 100%; padding: 14px; border: none;
+            border-radius: 10px; font-size: 16px; font-weight: 600;
+            cursor: pointer; margin-bottom: 12px; transition: opacity 0.2s;
         }
         .btn:hover { opacity: 0.88; }
         .btn-primary { background: #4f46e5; color: white; }
         .btn-secondary { background: #e2e8f0; color: #1a202c; }
         .btn-danger { background: #e53e3e; color: white; }
         .btn-success { background: #38a169; color: white; }
-        .btn-sm {
-            display: inline-block;
-            width: auto;
-            padding: 6px 14px;
-            font-size: 14px;
-            margin: 0 4px 0 0;
-        }
+        .btn-sm { display:inline-block; width:auto; padding:6px 14px; font-size:14px; margin:0 4px 0 0; }
 
         label { display: block; font-size: 14px; font-weight: 500; margin-bottom: 6px; color: #2d3748; }
-
         input, select {
-            width: 100%;
-            padding: 12px;
-            border: 1.5px solid #e2e8f0;
-            border-radius: 8px;
-            font-size: 15px;
-            margin-bottom: 16px;
-            outline: none;
-            transition: border-color 0.2s;
+            width: 100%; padding: 12px; border: 1.5px solid #e2e8f0;
+            border-radius: 8px; font-size: 15px; margin-bottom: 16px;
+            outline: none; transition: border-color 0.2s;
         }
         input:focus, select:focus { border-color: #4f46e5; }
 
         .error {
-            background: #fff5f5;
-            border: 1px solid #fc8181;
-            color: #c53030;
-            padding: 10px 14px;
-            border-radius: 8px;
-            font-size: 14px;
-            margin-bottom: 16px;
-            display: none;
+            background: #fff5f5; border: 1px solid #fc8181; color: #c53030;
+            padding: 10px 14px; border-radius: 8px; font-size: 14px;
+            margin-bottom: 16px; display: none;
         }
 
         .session-code {
-            font-size: 48px;
-            font-weight: 800;
-            text-align: center;
-            letter-spacing: 8px;
-            color: #4f46e5;
-            padding: 16px 0;
+            font-size: 48px; font-weight: 800; text-align: center;
+            letter-spacing: 8px; color: #4f46e5; padding: 16px 0;
         }
-
-        #qr-container {
-            display: flex;
-            justify-content: center;
-            margin: 16px 0;
-        }
-
+        #qr-container { display: flex; justify-content: center; margin: 16px 0; }
         #qr-container img { border-radius: 8px; }
 
         .caption-box {
-            background: #f7fafc;
-            border: 1.5px solid #e2e8f0;
-            border-radius: 12px;
-            padding: 20px;
-            min-height: 200px;
-            max-height: 60vh;
-            overflow-y: auto;
-            font-size: 20px;
-            line-height: 1.7;
-            color: #1a202c;
-            margin-bottom: 20px;
-            word-wrap: break-word;
+            background: #f7fafc; border: 1.5px solid #e2e8f0; border-radius: 12px;
+            padding: 20px; min-height: 200px; max-height: 60vh; overflow-y: auto;
+            overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+            font-size: 20px; line-height: 1.7; color: #1a202c;
+            margin-bottom: 20px; word-wrap: break-word;
         }
 
-        .speak-queue { margin-bottom: 20px; }
+        .caption-panel { display: flex; flex-direction: column; }
+        .caption-panel-label {
+            font-size: 13px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.04em; color: #718096; margin-bottom: 6px;
+        }
+        .caption-panel .caption-box { min-height: 30vh; max-height: 60vh; font-size: 19px; margin-bottom: 0; }
+        .caption-panel-es .caption-box { background: #e6fffa; border-color: #b2f5ea; }
 
-        .queue-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            background: #f7fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 8px;
-            padding: 12px 14px;
-            margin-bottom: 8px;
-            font-size: 14px;
+        .leader-live-layout { display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start; }
+        .leader-left { flex: 0 0 300px; display: flex; flex-direction: column; }
+        .leader-right { flex: 1; min-width: 300px; display: flex; flex-direction: column; gap: 16px; }
+        @media (max-width: 800px) {
+            .leader-left { flex: 1 1 100%; }
+            .leader-right { flex: 1 1 100%; }
         }
 
-        .badge {
-            background: #ebf4ff;
-            color: #2b6cb0;
-            border-radius: 20px;
-            padding: 2px 10px;
-            font-size: 12px;
-            font-weight: 600;
-            margin-right: 8px;
+        .turn-indicator {
+            display: none; background: #fffaf0; border: 1.5px solid #f6ad55;
+            color: #c05621; border-radius: 10px; padding: 12px 14px;
+            font-size: 14px; font-weight: 600; margin-bottom: 12px;
         }
+        .turn-indicator.active { display: block; }
 
         .status-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #48bb78;
-            display: inline-block;
-            margin-right: 6px;
-            animation: pulse 1.5s infinite;
+            width: 10px; height: 10px; border-radius: 50%; background: #48bb78;
+            display: inline-block; margin-right: 6px; animation: pulse 1.5s infinite;
         }
+        @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+        .status-bar { display: flex; align-items: center; font-size: 14px; color: #4a5568; margin-bottom: 16px; }
+        .divider { border: none; border-top: 1px solid #e2e8f0; margin: 20px 0; }
 
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.4; }
+        .speak-queue { margin-bottom: 16px; }
+        .queue-item {
+            display: flex; align-items: center; justify-content: space-between;
+            background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+            padding: 12px 14px; margin-bottom: 8px; font-size: 14px;
         }
+        .badge { background: #ebf4ff; color: #2b6cb0; border-radius: 20px; padding: 2px 10px; font-size: 12px; font-weight: 600; margin-right: 8px; }
 
-        .status-bar {
-            display: flex;
-            align-items: center;
-            font-size: 14px;
-            color: #4a5568;
-            margin-bottom: 16px;
+        .notice {
+            display: none; background: #ebf8ff; border: 1.5px solid #90cdf4;
+            color: #2c5282; border-radius: 12px; padding: 20px; text-align: center;
+            font-size: 18px; font-weight: 600; margin-bottom: 20px; line-height: 1.5;
         }
+        .notice.active { display: block; }
 
-        .divider {
-            border: none;
-            border-top: 1px solid #e2e8f0;
-            margin: 20px 0;
-        }
-
-        .logo {
-            position: absolute;
-            top: 0px;
-            left: 0px;
-            margin-top: 15px;
-        }
-
-        .logo img {
-            max-width: 320px;
-            width: 100%;
-        }
-
+        .logo { position: absolute; top: 0; left: 0; margin-top: 15px; z-index: 1; }
+        .logo img { max-width: 320px; width: 100%; }
         @media (max-width: 600px) {
-            .logo {
-                position: relative;
-                top: auto;
-                left: auto;
-                display: flex;
-                justify-content: center;
-                width: 100%;
-                padding: 16px 0 8px;
-                margin-bottom: 8px;
-            }
-
-            .logo img {
-                width: 300px;
-                max-width: 70%;
-            }
+            .logo { position: relative; top:auto; left:auto; display:flex; justify-content:center; width:100%; padding:16px 0 8px; margin-bottom:8px; }
+            .logo img { width: 300px; max-width: 70%; }
         }
 
         .small { font-size: 13px; color: #718096; text-align: center; margin-top: 8px; }
+        .link-btn { background:none; border:none; color:#4f46e5; font-size:14px; cursor:pointer; text-decoration:underline; padding:0; margin-top:8px; }
 
         footer {
-            width: 100vw;
-            text-align: center;
-            padding: 24px 40px 16px;
-            font-size: 20px;
-            color: #718096;
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
-            gap: 8px 48px;
-            margin-top: auto;
+            width: 100vw; text-align: center; padding: 24px 40px 16px;
+            font-size: 20px; color: #718096; display: flex; flex-wrap: wrap;
+            justify-content: center; gap: 8px 48px; margin-top: auto;
         }
-
-        footer a {
-            color: #4f46e5;
-            text-decoration: none;
-            white-space: nowrap;
-        }
-
+        footer a { color: #4f46e5; text-decoration: none; white-space: nowrap; }
         footer a:hover { text-decoration: underline; }
-
         @media (max-width: 600px) {
-            footer {
-                flex-direction: column;
-                align-items: center;
-                gap: 12px;
-                padding: 20px 16px 24px;
-                font-size: 20px;
-                width: 100%;
-                margin-top: 24px;
-            }
+            footer { flex-direction: column; align-items: center; gap: 12px; padding: 20px 16px 24px; width: 100%; margin-top: 24px; }
         }
 
         .modal-overlay {
-            display: none;
-            position: fixed;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            background: rgba(0,0,0,0.5);
-            z-index: 100;
-            align-items: center;
-            justify-content: center;
-            padding: 16px;
+            display: none; position: fixed; top:0; left:0; width:100%; height:100%;
+            background: rgba(0,0,0,0.5); z-index: 100; align-items: center;
+            justify-content: center; padding: 16px; touch-action: none; overscroll-behavior: none;
         }
-
         .modal-overlay.active { display: flex; }
-
         .modal {
-            background: white;
-            border-radius: 16px;
-            padding: 28px 24px;
-            max-width: 80%;
-            width: 100%;
-            max-height: 85vh;
-            overflow-y: auto;
-            position: relative;
+            background: white; border-radius: 16px; padding: 28px 24px;
+            max-width: 80%; width: 100%; max-height: 85vh; overflow-y: auto;
+            overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+            touch-action: pan-y; position: relative;
         }
-
-        @media (max-width: 600px) {
-            .modal {
-                max-width: 480px;
-                max-height: 90%;
-            }
-        }
-
+        @media (max-width: 600px) { .modal { max-width: 480px; max-height: 90%; } }
         .modal h2 { margin-bottom: 16px; }
         .modal h3 { font-size: 16px; font-weight: 600; margin: 20px 0 8px; color: #2d3748; }
         .modal p { font-size: 14px; color: #4a5568; margin-bottom: 12px; line-height: 1.6; }
         .modal ol { padding-left: 20px; margin-bottom: 16px; }
         .modal ol li { font-size: 14px; color: #4a5568; margin-bottom: 8px; line-height: 1.6; }
-        .modal-close {
-            position: absolute;
-            top: 16px; right: 16px;
-            background: none;
-            border: none;
-            font-size: 20px;
-            cursor: pointer;
-            color: #718096;
-            padding: 4px 8px;
-        }
+        .modal-close { position: absolute; top: 16px; right: 16px; background: none; border: none; font-size: 20px; cursor: pointer; color: #718096; padding: 4px 8px; }
     </style>
 </head>
 <body>
 <div style="flex:1;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;">
-
-    <div class="logo">
-        <img src="/logo.png"/>
-    </div>
+    <div class="logo"><img src="/logo.png"/></div>
 
     <!-- SCREEN 1: Landing -->
     <div class="screen active" id="screen-landing">
@@ -319,48 +180,68 @@
         <div class="card">
             <h2>Start a session</h2>
             <div class="error" id="leader-error"></div>
-
             <label>Access code</label>
             <input type="password" id="access-code" placeholder="Enter access code"/>
-
             <label>OpenAI API key</label>
             <input type="password" id="api-key" placeholder="sk-..."/>
-
-            <label>Primary spoken language</label>
-            <select id="source-language">
-                <option value="en">English</option>
-                <option value="es">Spanish</option>
-            </select>
-
+            <p class="small" style="margin-top:-10px;margin-bottom:20px;text-align:left">
+                English is captioned live for the room. Spanish attendees get a live Spanish translation.
+                When a Spanish speaker needs to address the room, use the toggle or approve their request.
+            </p>
             <button class="btn btn-primary" onclick="createSession()">Start session</button>
             <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
         </div>
     </div>
 
     <!-- SCREEN 3: Leader live -->
-    <div class="screen" id="screen-leader-live">
+    <div class="screen wide" id="screen-leader-live">
         <div class="card">
-            <div class="status-bar">
-                <span class="status-dot"></span>
-                <span>Session live</span>
+            <div class="status-bar"><span class="status-dot"></span><span>Session live</span></div>
+            <div class="leader-live-layout">
+                <div class="leader-left">
+                    <h2 style="text-align:center">Share this code</h2>
+                    <div class="session-code" id="display-code"></div>
+                    <div id="qr-container"></div>
+                    <p class="small">Listeners scan the QR code or go to <strong id="display-url"></strong></p>
+                    <button class="link-btn" onclick="openDisplay()">Open big display screen &#8599;</button>
+                    <button class="link-btn" onclick="openTranscript()">Pop out captions-only window &#8599;</button>
+
+                    <hr class="divider"/>
+
+                    <div class="turn-indicator" id="turn-indicator">
+                        🎤 Spanish speaker has the floor — English box shows the live translation.
+                    </div>
+                    <button class="btn btn-success" id="spanish-toggle" onclick="toggleSpanishTurn()">🎤 Spanish speaker (switch)</button>
+
+                    <h2 style="margin-top:8px">Speak requests</h2>
+                    <div class="speak-queue" id="speak-queue">
+                        <p style="font-size:14px;color:#718096">No pending requests.</p>
+                    </div>
+
+                    <hr class="divider"/>
+                    <button class="btn btn-danger" onclick="endSession()">End session</button>
+                </div>
+
+                <div class="leader-right">
+                    <div class="caption-panel caption-panel-en">
+                        <div class="caption-panel-label">English</div>
+                        <div class="caption-box" id="caption-box-en"></div>
+                    </div>
+                    <div class="caption-panel caption-panel-es">
+                        <div class="caption-panel-label">Español</div>
+                        <div class="caption-box" id="caption-box-es"></div>
+                    </div>
+
+                    <details id="debug-details" style="margin-top:4px">
+                        <summary style="cursor:pointer;font-size:12px;color:#718096">Debug log (caption troubleshooting)</summary>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin:8px 0;font-weight:500">
+                            <input type="checkbox" id="debug-toggle" style="width:auto;margin:0" onchange="debugEnabled = this.checked"/>
+                            Log every event from both sessions (es = baseline, en = Spanish turn)
+                        </label>
+                        <pre id="debug-log" style="max-height:220px;overflow:auto;background:#1a202c;color:#68d391;font-size:11px;line-height:1.4;padding:10px;border-radius:8px;white-space:pre-wrap;word-break:break-word;margin:0"></pre>
+                    </details>
+                </div>
             </div>
-
-            <h2 style="text-align:center">Share this code</h2>
-            <div class="session-code" id="display-code"></div>
-            <div id="qr-container"></div>
-            <p class="small">Listeners scan the QR code or go to <strong id="display-url"></strong></p>
-
-            <hr class="divider"/>
-
-            <h2>Speak requests</h2>
-            <div class="speak-queue" id="speak-queue">
-                <p style="font-size:14px;color:#718096">No pending requests.</p>
-            </div>
-
-            <button class="btn btn-secondary" id="resume-btn" style="display:none" onclick="resumeSession()">▶ Resume main session</button>
-            <hr class="divider"/>
-
-            <button class="btn btn-danger" onclick="endSession()">End session</button>
         </div>
     </div>
 
@@ -369,17 +250,14 @@
         <div class="card">
             <h2>Join a session</h2>
             <div class="error" id="listener-error"></div>
-
             <label>Session code</label>
             <input type="text" id="session-code-input" placeholder="ABC123" maxlength="6"
                    oninput="this.value = this.value.toUpperCase()"/>
-
             <label>Preferred language</label>
             <select id="listener-language">
                 <option value="english">English</option>
                 <option value="spanish">Español</option>
             </select>
-
             <button class="btn btn-primary" onclick="joinSession()">Join</button>
             <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
         </div>
@@ -388,45 +266,49 @@
     <!-- SCREEN 5: Listener live -->
     <div class="screen" id="screen-listener-live">
         <div class="card">
-            <div class="status-bar">
-                <span class="status-dot"></span>
-                <span id="listener-status">Connected</span>
+            <div class="status-bar"><span class="status-dot"></span><span id="listener-status">Connected</span></div>
+
+            <div class="notice" id="listener-notice">
+                🔊 A Spanish speaker has the floor.<br>Please listen to the room audio.
             </div>
 
             <div class="caption-box" id="caption-box"></div>
 
-            <button class="btn btn-secondary" id="speak-btn" onclick="requestSpeak()">🎙 Request to speak</button>
+            <button class="btn btn-secondary" id="audio-toggle-btn" onclick="toggleAudio()">🔊 Hear translation</button>
+            <p class="small" id="audio-status"></p>
+
+            <button class="btn btn-secondary" id="speak-btn" style="display:none" onclick="requestSpeak()">🎙 Request to speak</button>
             <p class="small" id="speak-status"></p>
         </div>
     </div>
 </div>
 
-<!-- FOOTER -->
 <footer>
     <a href="#" onclick="openModal('modal-instructions')">Step-by-Step Instructions</a>
     <a href="#" onclick="openModal('modal-about')">About</a>
     <a href="#" onclick="openModal('modal-privacy')">Privacy Policy</a>
     <a href="mailto:dynontricia@gmail.com">Contact</a>
+    <span style="width:100%;font-size:12px;color:#a0aec0;margin-top:4px">build: queue+toggle · dual-session</span>
 </footer>
 
-<!-- MODAL: Privacy Policy -->
+<!-- MODAL: Privacy -->
 <div class="modal-overlay" id="modal-privacy">
     <div class="modal">
         <button class="modal-close" onclick="closeModal('modal-privacy')">✕</button>
         <h2>Privacy Policy</h2>
         <p>Recovery Translator is a free tool built to support recovery communities. We take your privacy seriously.</p>
-        <h3>Audio & Transcripts</h3>
-        <p>Audio is streamed directly from your device to OpenAI's translation API for real-time processing. Recovery Translator does not store, record, or retain any audio or transcript data on its servers.</p>
+        <h3>Audio &amp; Transcripts</h3>
+        <p>Audio is streamed directly from the session leader's device to OpenAI's translation API for real-time processing. Recovery Translator does not store, record, or retain any audio or transcript data on its servers.</p>
         <h3>OpenAI Data Policy</h3>
-        <p>Audio and transcripts are processed by OpenAI and may be retained by OpenAI for up to 30 days for abuse monitoring purposes. This monitoring is automated and is designed to detect violations of OpenAI's usage policies — for example, using the API to generate harmful content, facilitate illegal activity, or circumvent safety systems. Recovery Translator's use case — spoken language interpretation for recovery meetings — does not fall into any of these categories.</p>
-        <p>If no abuse is detected by OpenAI's automated systems, no human at OpenAI will review your audio or transcripts. Your session content is not read, listened to, or accessed by any person.</p>
+        <p>Audio and transcripts are processed by OpenAI and may be retained by OpenAI for up to 30 days for abuse monitoring purposes. This monitoring is automated. Recovery Translator's use case — spoken language interpretation for recovery meetings — does not fall into any prohibited category.</p>
+        <p>If no abuse is detected by OpenAI's automated systems, no human at OpenAI will review your audio or transcripts.</p>
         <p>OpenAI does not use API data to train its models. For more information, visit openai.com/privacy.</p>
         <h3>Session Data</h3>
-        <p>Session codes and connection data exist only in memory for the duration of your session and are deleted when the session ends.</p>
+        <p>Session codes and connection data exist only in memory for the duration of your session and are deleted when the session ends. Your browser stores your session code locally so you can reconnect automatically if you briefly lose connection — this is cleared when the session ends.</p>
         <h3>No Accounts, No Tracking</h3>
-        <p>Recovery Translator does not require accounts, does not use cookies, and does not track users in any way.</p>
+        <p>Recovery Translator does not require accounts, use cookies, or track users.</p>
         <h3>Contact</h3>
-        <p>Questions about privacy? Email me at <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
+        <p>Questions about privacy? Email <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
     </div>
 </div>
 
@@ -435,34 +317,21 @@
     <div class="modal">
         <button class="modal-close" onclick="closeModal('modal-instructions')">✕</button>
         <h2>Step-by-Step Instructions</h2>
-
         <h3>Session Leaders</h3>
         <ol>
-            <li>Open <a href="https://recoverytranslator-production.up.railway.app">recoverytranslator-production.up.railway.app</a> and tap <strong>I am a session leader.</strong></li>
-            <li>Enter your access code, your OpenAI API key, and select the primary spoken language. Tap <strong>Start session.</strong></li>
-            <li>Share the QR code or session code with your attendees.</li>
-            <li>Speak normally — captions and translation are live.</li>
-            <li>When a listener requests to speak, tap <strong>Approve</strong> or <strong>Deny</strong> on your screen.</li>
-            <li>When the approved speaker is finished, tap <strong>Resume main session.</strong></li>
-            <li>When the meeting ends, tap <strong>End session.</strong></li>
+            <li>Tap <strong>I am a session leader</strong>, enter your access code and OpenAI API key, and tap <strong>Start session.</strong></li>
+            <li>Share the QR code or session code. Optionally open the <strong>big display screen</strong> for a room projector.</li>
+            <li>Speak normally — English is captioned live, and Spanish attendees get a live translation.</li>
+            <li>When a Spanish speaker will address the room, tap <strong>Spanish speaker (switch)</strong>, or <strong>Approve</strong> their request in the queue. The English box then shows the live English translation of their Spanish.</li>
+            <li>When they finish, tap the toggle again to return to the main session.</li>
+            <li>Tap <strong>End session</strong> when the meeting is over.</li>
         </ol>
-
-        <h3>Listeners — Primary Language</h3>
+        <h3>Listeners</h3>
         <ol>
-            <li>Scan the QR code or go to <a href="https://recoverytranslator-production.up.railway.app">recoverytranslator-production.up.railway.app</a> and tap <strong>I am a listener.</strong></li>
-            <li>Enter the session code, select your language, and tap <strong>Join.</strong></li>
-            <li>Captions will appear automatically as people speak.</li>
-            <li>To address the group, tap <strong>Request to speak</strong> and wait for approval.</li>
-            <li>When approved, speak clearly. Tap <strong>Done speaking</strong> when finished.</li>
-        </ol>
-
-        <h3>Listeners — Second Language</h3>
-        <ol>
-            <li>Scan the QR code or go to <a href="https://recoverytranslator-production.up.railway.app">recoverytranslator-production.up.railway.app</a> and tap <strong>I am a listener.</strong></li>
-            <li>Enter the session code, select <strong>Español</strong>, and tap <strong>Join.</strong></li>
-            <li>Translated captions will appear automatically as people speak.</li>
-            <li>To address the group, tap <strong>Request to speak</strong> and wait for approval.</li>
-            <li>When approved, speak clearly into your phone's microphone. Tap <strong>Done speaking</strong> when finished.</li>
+            <li>Scan the QR code or tap <strong>I am a listener</strong>, enter the session code, choose your language, and tap <strong>Join.</strong></li>
+            <li>Captions appear automatically. Tap <strong>🔊 Hear translation</strong> to also listen to the translated audio.</li>
+            <li>Spanish attendees can tap <strong>🎙 Request to speak</strong> to ask to address the room.</li>
+            <li>When a Spanish speaker has the floor, Spanish screens pause captions and show a reminder to listen to the room.</li>
         </ol>
     </div>
 </div>
@@ -472,434 +341,542 @@
     <div class="modal">
         <button class="modal-close" onclick="closeModal('modal-about')">✕</button>
         <h2>About Recovery Translator</h2>
-        <p>Recovery Translator provides real-time spoken language interpretation for recovery meetings, area committees, and service assemblies — making meetings accessible to everyone regardless of the language they speak.</p>
-
+        <p>Recovery Translator provides real-time spoken language interpretation for recovery meetings, area committees, and service assemblies.</p>
         <h3>How It Works</h3>
-        <p>The session leader opens a session from their device and shares a QR code with attendees. As the leader speaks, their words are transcribed and translated in real time. Attendees read captions on their phones in their preferred language. No special equipment is needed — just a phone and a browser.</p>
-        <p>Listeners who speak a different language can also request to speak. The session leader approves the request, and the system automatically translates their words back to the room's primary language.</p>
-
+        <p>The leader opens a session and shares a QR code. English speech is transcribed live for the room, and translated to Spanish for Spanish-speaking attendees. When a Spanish speaker addresses the room, the leader switches modes and the room sees a live English translation of their words.</p>
         <h3>Getting Access</h3>
-        <p>Session leaders need an access code and an OpenAI API key to start a session. Listeners only need the session code provided by the leader — no account or API key required.</p>
-        <p>To request an access code, contact me at <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
-
-        <h3>Estimated Cost</h3>
-        <p>Recovery Translator uses OpenAI's real-time translation API, billed directly to the session leader's OpenAI account. The estimated cost is <strong>about $0.05 per minute</strong> of active session time — typically under $5 for a two-hour meeting.</p>
-
+        <p>Leaders need an access code and an OpenAI API key. Listeners only need the session code. To request an access code, contact <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
+        <h3>Cost</h3>
+        <p>Recovery Translator uses OpenAI's real-time translation API, billed to the leader's OpenAI account. Please check OpenAI's current realtime API pricing for an up-to-date estimate.</p>
         <h3>Built for Recovery</h3>
-        <p>This tool was built by and for the recovery community, with anonymity and accessibility in mind. It is free to use and open source.</p>
+        <p>Built by and for the recovery community, with anonymity and accessibility in mind. Free to use and open source.</p>
     </div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
-    let leaderDataChannel = null;
-    let sessionCode = null;
-    let listenerLanguage = null;
-    let signalingWs = null;
-    let eventSource = null;
+    // ── Shared state ─────────────────────────────────────
+    let sessionCode = null, listenerLanguage = null, currentRole = null;
+    let signalingWs = null, eventSource = null;
 
-    function show(screenId) {
+    // Leader state
+    let micStream = null;
+    let pcBase = null;   // baseline session, output: es  (translation only now)
+    let pcTurn = null;   // on-demand session, output: en (used during a Spanish turn)
+    let pcTranscribe = null, transcriptionDc = null; // dedicated English transcription
+    let spanishTurn = false;
+    let remoteTrackES = null;                // baseline translated (Spanish) audio, for "hear translation"
+    let audioRelayPCs = {};                  // listenerId -> RTCPeerConnection
+
+    // Listener state
+    let listenerId = null, audioRelayPc = null, audioEl = null;
+
+    const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+
+    // Debug logging: tags each OpenAI event with which session it came from
+    // ('es' = baseline session, 'en' = the on-demand Spanish-turn session).
+    let debugEnabled = false;
+    function logDebug(tag, ev) {
+        if (!debugEnabled) return;
+        const panel = document.getElementById('debug-log');
+        if (!panel) return;
+        let line;
+        if (ev.type === 'session.input_transcript.delta') line = `[${tag}] IN  ${JSON.stringify(ev.delta)}`;
+        else if (ev.type === 'session.output_transcript.delta') line = `[${tag}] OUT ${JSON.stringify(ev.delta)}`;
+        else line = `[${tag}] ${ev.type}`;
+        panel.textContent += `${new Date().toLocaleTimeString()}  ${line}\n`;
+        panel.scrollTop = panel.scrollHeight;
+    }
+
+    function show(id) {
         document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-        document.getElementById(screenId).classList.add('active');
+        document.getElementById(id).classList.add('active');
+    }
+    function showError(id, msg) { const el = document.getElementById(id); el.textContent = msg; el.style.display = 'block'; }
+    function hideError(id) { document.getElementById(id).style.display = 'none'; }
+
+    function writeCaption(boxId, language, delta) {
+        const box = document.getElementById(boxId);
+        if (box) { box.innerText += delta; box.scrollTop = box.scrollHeight; }
+        if (signalingWs && signalingWs.readyState === WebSocket.OPEN) {
+            signalingWs.send(JSON.stringify({ type: 'transcript', language, delta }));
+        }
     }
 
-    function showError(id, msg) {
-        const el = document.getElementById(id);
-        el.textContent = msg;
-        el.style.display = 'block';
-    }
-
-    function hideError(id) {
-        document.getElementById(id).style.display = 'none';
-    }
+    // Resume-state (reconnect after a backgrounded tab)
+    function saveResumeState(s) { localStorage.setItem('rt-session', JSON.stringify(s)); }
+    function clearResumeState() { localStorage.removeItem('rt-session'); }
+    function getResumeState() { try { return JSON.parse(localStorage.getItem('rt-session')); } catch(e){ return null; } }
 
     // ── LEADER ──────────────────────────────────────────
-
     async function createSession() {
         hideError('leader-error');
-        const accessCode    = document.getElementById('access-code').value.trim();
-        let apiKey        = document.getElementById('api-key').value.trim();
-        const sourceLanguage = document.getElementById('source-language').value;
-
-        //if (!accessCode || !apiKey) {
-        if (!accessCode) {
-            showError('leader-error', 'Please fill in all fields.');
-            return;
-        }
-
-        if(!apiKey) {
-            apiKey = 'default-api-key';
-        }
-
+        const accessCode = document.getElementById('access-code').value.trim();
+        let apiKey = document.getElementById('api-key').value.trim();
+        if (!accessCode) { showError('leader-error', 'Please enter the access code.'); return; }
+        if (!apiKey) apiKey = 'default-api-key';
         try {
             const res = await fetch('/session/create', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ accessCode, apiKey, sourceLanguage })
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ accessCode, apiKey })
             });
-
             const data = await res.json();
-
-            if (!res.ok) {
-                showError('leader-error', data.error || 'Failed to create session.');
-                return;
-            }
-
+            if (!res.ok) { showError('leader-error', data.error || 'Failed to create session.'); return; }
             sessionCode = data.sessionCode;
-            startLeaderSession(sessionCode);
-
-        } catch (err) {
-            showError('leader-error', 'Could not connect to server.');
-        }
+            saveResumeState({ role: 'leader', sessionCode });
+            await startLeaderSession(sessionCode);
+        } catch (err) { showError('leader-error', 'Could not connect to server.'); }
     }
 
     async function startLeaderSession(code) {
+        currentRole = 'leader'; sessionCode = code;
         document.getElementById('display-code').textContent = code;
-
         const url = `${location.origin}?join=${code}`;
         document.getElementById('display-url').textContent = url;
-
         document.getElementById('qr-container').innerHTML = '';
-        new QRCode(document.getElementById('qr-container'), {
-            text: url,
-            width: 180,
-            height: 180
+        new QRCode(document.getElementById('qr-container'), { text: url, width: 180, height: 180 });
+        document.getElementById('caption-box-en').textContent = '';
+        document.getElementById('caption-box-es').textContent = '';
+        const dbg = document.getElementById('debug-log'); if (dbg) dbg.textContent = '';
+
+        openLeaderSignaling(code);
+        micStream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
         });
-
-        const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        signalingWs = new WebSocket(`${wsProtocol}//${location.host}?session=${code}&role=leader`);
-
-        signalingWs.onmessage = async (event) => {
-            const msg = JSON.parse(event.data);
-
-            if (msg.type === 'speak_request') {
-                addQueueItem(msg.id, msg.language);
-            }
-            if (msg.type === 'flip_language') {
-                if (leaderDataChannel && leaderDataChannel.readyState === 'open') {
-                    leaderDataChannel.send(JSON.stringify({
-                        type: 'session.update',
-                        session: {
-                            audio: {
-                                output: { language: msg.language }
-                            }
-                        }
-                    }));
-                    console.log('Flipped output language to:', msg.language);
-                }
-            }
-        };
-
-        signalingWs.onclose = () => {
-            console.log('Leader signaling closed');
-        };
-
-        await startWebRTC(code);
+        await Promise.all([startBaseline(code), startTranscription(code)]);
         show('screen-leader-live');
     }
 
-    async function startWebRTC(code) {
-        // Get client secret from our server
-        const res = await fetch('/session/client-secret', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionCode: code })
-        });
-
-        const data = await res.json();
-        const clientSecret = data.value;
-
-        // Create peer connection
-        window.leaderPc = new RTCPeerConnection();
-        const pc = window.leaderPc;
-
-        // Capture mic and add to peer connection
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        pc.addTrack(stream.getAudioTracks()[0], stream);
-
-        // Listen for transcript deltas on the data channel
-        const dataChannel = pc.createDataChannel('oai-events');
-        leaderDataChannel = dataChannel;
-        dataChannel.onmessage = (e) => {
-            const event = JSON.parse(e.data);
-
-            if (event.type === 'session.updated') {
-                console.log('Session updated confirmed:', event.session.audio.output.language);
-                if (signalingWs.readyState === WebSocket.OPEN) {
-                    signalingWs.send(JSON.stringify({ type: 'flip_confirmed' }));
-                }
+    function openLeaderSignaling(code) {
+        const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        signalingWs = new WebSocket(`${wsProtocol}//${location.host}?session=${code}&role=leader`);
+        signalingWs.onmessage = async (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'speak_request') addQueueItem(msg.id, msg.language);
+            if (msg.type === 'request_audio') await startAudioRelay(msg.listenerId, msg.language);
+            if (msg.type === 'stop_audio') stopAudioRelay(msg.listenerId);
+            if (msg.type === 'audio_answer') {
+                const pc = audioRelayPCs[msg.listenerId];
+                if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
             }
-
-            if (event.type === 'session.input_transcript.delta') {
-                signalingWs.send(JSON.stringify({
-                    type: 'transcript',
-                    direction: 'input',
-                    delta: event.delta
-                }));
-            }
-
-            if (event.type === 'session.output_transcript.delta') {
-                signalingWs.send(JSON.stringify({
-                    type: 'transcript',
-                    direction: 'output',
-                    delta: event.delta
-                }));
+            if (msg.type === 'audio_ice') {
+                const pc = audioRelayPCs[msg.listenerId];
+                if (pc && msg.candidate) { try { await pc.addIceCandidate(msg.candidate); } catch(e){} }
             }
         };
+    }
 
-        // Create and send SDP offer to OpenAI
+    // Baseline session: output Spanish. Purely a translator now -- English
+    // source captions come from the dedicated transcription session below.
+    async function startBaseline(code) {
+        pcBase = await connectSession(code, 'es', (oaiEvent) => {
+            if (spanishTurn) return; // held while a Spanish speaker has the floor
+            if (oaiEvent.type === 'session.output_transcript.delta') {
+                writeCaption('caption-box-es', 'spanish', oaiEvent.delta);
+            }
+        }, (track) => { remoteTrackES = track; });
+    }
+
+    // On-demand session for a Spanish turn: output English. Its
+    // output_transcript is the English translation of the Spanish being
+    // spoken (-> English box). Nothing else is printed.
+    async function startTurnSession(code) {
+        pcTurn = await connectSession(code, 'en', (oaiEvent) => {
+            if (oaiEvent.type === 'session.output_transcript.delta') {
+                writeCaption('caption-box-en', 'english', oaiEvent.delta);
+            }
+        }, null);
+    }
+
+    // Dedicated transcription session: gpt-realtime-whisper, delay: high, no
+    // VAD (manual commit only). Streams continuously with NO periodic commit
+    // loop -- deltas flow live on their own. We only send an explicit commit
+    // at the two moments that matter: starting a Spanish turn (flush the
+    // English tail so nothing is cut off mid-word) and ending one (discard
+    // whatever this session absorbed while Spanish was being spoken, and
+    // resume live). transcriptionMode gates what happens to incoming text:
+    //   'live'               -> print deltas normally (default state)
+    //   'flushing-for-turn'  -> still print deltas (the in-flight tail),
+    //                           until 'completed' fires, then insert a line
+    //                           break and hold
+    //   'held'               -> swallow deltas silently (Spanish is being
+    //                           spoken; this session mishears it as English)
+    //   'flushing-for-resume'-> swallow deltas until 'completed' fires
+    //                           (discard the garbage), then insert a line
+    //                           break and return to 'live'
+    let transcriptionMode = 'live';
+
+    async function startTranscription(code) {
+        const res = await fetch('/session/transcription-secret', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionCode: code })
+        });
+        const secret = (await res.json()).value;
+
+        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        pc.addTrack(micStream.getAudioTracks()[0].clone(), micStream);
+
+        const dc = pc.createDataChannel('oai-events');
+        dc.onmessage = (e) => handleTranscriptionEvent(JSON.parse(e.data));
+
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
+        const sdpRes = await fetch('https://api.openai.com/v1/realtime/calls', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${secret}`, 'Content-Type': 'application/sdp' },
+            body: offer.sdp
+        });
+        await pc.setRemoteDescription({ type: 'answer', sdp: await sdpRes.text() });
 
-        const sdpResponse = await fetch(
-            'https://api.openai.com/v1/realtime/translations/calls',
-            {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${clientSecret}`,
-                    'Content-Type': 'application/sdp'
-                },
-                body: offer.sdp
-            }
-        );
-
-        const answerSdp = await sdpResponse.text();
-        await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-
-        console.log('WebRTC connected to OpenAI');
+        pcTranscribe = pc;
+        transcriptionDc = dc;
     }
+
+    function handleTranscriptionEvent(ev) {
+        logDebug('transcribe', ev);
+
+        if (ev.type === 'conversation.item.input_audio_transcription.delta') {
+            if (transcriptionMode === 'live' || transcriptionMode === 'flushing-for-turn') {
+                writeCaption('caption-box-en', 'english', ev.delta);
+            }
+            // 'held' and 'flushing-for-resume': swallow silently
+        }
+
+        if (ev.type === 'conversation.item.input_audio_transcription.completed') {
+            if (transcriptionMode === 'flushing-for-turn') {
+                writeCaption('caption-box-en', 'english', '\n\n');
+                transcriptionMode = 'held';
+            } else if (transcriptionMode === 'flushing-for-resume') {
+                writeCaption('caption-box-en', 'english', '\n\n');
+                transcriptionMode = 'live';
+            }
+        }
+
+        // Safety net: an empty-buffer commit (e.g. toggled with no speech yet)
+        // returns an error instead of completed. Don't get stuck waiting.
+        if (ev.type === 'error') {
+            if (transcriptionMode === 'flushing-for-turn') transcriptionMode = 'held';
+            else if (transcriptionMode === 'flushing-for-resume') transcriptionMode = 'live';
+        }
+    }
+
+    function commitTranscription() {
+        if (transcriptionDc && transcriptionDc.readyState === 'open') {
+            transcriptionDc.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+        } else {
+            // No channel available -- fail safe rather than hang in a
+            // flushing state forever.
+            if (transcriptionMode === 'flushing-for-turn') transcriptionMode = 'held';
+            else if (transcriptionMode === 'flushing-for-resume') transcriptionMode = 'live';
+        }
+    }
+
+    // Shared connector: opens one translation session to OpenAI over WebRTC.
+    async function connectSession(code, targetLanguage, onEvent, onTrack) {
+        const res = await fetch('/session/client-secret', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionCode: code, targetLanguage })
+        });
+        const secret = (await res.json()).value;
+
+        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        // Clone the track per connection -- sharing one MediaStreamTrack object
+        // across multiple peer connections can cause inconsistent preprocessing
+        // and sync issues between the two sessions.
+        pc.addTrack(micStream.getAudioTracks()[0].clone(), micStream);
+        if (onTrack) pc.ontrack = (e) => onTrack(e.track);
+
+        const dc = pc.createDataChannel('oai-events');
+        dc.onmessage = (e) => {
+            const ev = JSON.parse(e.data);
+            logDebug(targetLanguage, ev);
+            onEvent(ev);
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        const sdpRes = await fetch('https://api.openai.com/v1/realtime/translations/calls', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${secret}`, 'Content-Type': 'application/sdp' },
+            body: offer.sdp
+        });
+        await pc.setRemoteDescription({ type: 'answer', sdp: await sdpRes.text() });
+        return pc;
+    }
+
+    // Both the toggle and an approved queue request funnel through here.
+    async function beginSpanishTurn() {
+        if (spanishTurn) return;
+        spanishTurn = true;
+        document.getElementById('turn-indicator').classList.add('active');
+        document.getElementById('spanish-toggle').textContent = '◀ Return to main session';
+        signalingWs.send(JSON.stringify({ type: 'spanish_turn', active: true }));
+        // Flush the transcription session's in-flight English tail before we
+        // stop displaying it -- commit, keep printing until 'completed', then
+        // a line break and hold (see handleTranscriptionEvent).
+        transcriptionMode = 'flushing-for-turn';
+        commitTranscription();
+        await startTurnSession(sessionCode);
+    }
+    function endSpanishTurn() {
+        if (!spanishTurn) return;
+        spanishTurn = false;
+        document.getElementById('turn-indicator').classList.remove('active');
+        document.getElementById('spanish-toggle').textContent = '🎤 Spanish speaker (switch)';
+        signalingWs.send(JSON.stringify({ type: 'spanish_turn', active: false }));
+        if (pcTurn) { pcTurn.close(); pcTurn = null; }
+        // Discard whatever the transcription session absorbed while Spanish
+        // was being spoken (it was mishearing it as English), then resume live.
+        transcriptionMode = 'flushing-for-resume';
+        commitTranscription();
+    }
+    function toggleSpanishTurn() { spanishTurn ? endSpanishTurn() : beginSpanishTurn(); }
 
     function addQueueItem(id, language) {
         const queue = document.getElementById('speak-queue');
-
         if (queue.querySelector('p')) queue.innerHTML = '';
-
         const item = document.createElement('div');
         item.className = 'queue-item';
         item.id = `queue-${id}`;
-        item.innerHTML = `
-      <span>
-        <span class="badge">${language}</span>
-        Listener wants to speak
-      </span>
-      <span>
-        <button class="btn btn-success btn-sm" onclick="approveSpeak('${id}')">Approve</button>
-        <button class="btn btn-danger btn-sm" onclick="denySpeak('${id}')">Deny</button>
-      </span>
-    `;
+        item.innerHTML = `<span><span class="badge">${language}</span>Wants to speak</span>
+            <span><button class="btn btn-success btn-sm" onclick="approveSpeak('${id}')">Approve</button>
+            <button class="btn btn-danger btn-sm" onclick="denySpeak('${id}')">Deny</button></span>`;
         queue.appendChild(item);
     }
-
-    function approveSpeak(id) {
-        signalingWs.send(JSON.stringify({ type: 'approve', id }));
+    function clearQueueItem(id) {
         document.getElementById(`queue-${id}`)?.remove();
         if (!document.getElementById('speak-queue').children.length) {
             document.getElementById('speak-queue').innerHTML = '<p style="font-size:14px;color:#718096">No pending requests.</p>';
         }
-        document.getElementById('resume-btn').style.display = 'block';
     }
-
+    async function approveSpeak(id) {
+        signalingWs.send(JSON.stringify({ type: 'approve', id }));
+        clearQueueItem(id);
+        await beginSpanishTurn();
+    }
     function denySpeak(id) {
         signalingWs.send(JSON.stringify({ type: 'deny', id }));
-        document.getElementById(`queue-${id}`)?.remove();
-        if (!document.getElementById('speak-queue').children.length) {
-            document.getElementById('speak-queue').innerHTML = '<p style="font-size:14px;color:#718096">No pending requests.</p>';
-        }
+        clearQueueItem(id);
     }
 
-    function resumeSession() {
-        signalingWs.send(JSON.stringify({ type: 'resume_primary' }));
-        document.getElementById('resume-btn').style.display = 'none';
+    async function startAudioRelay(listenerId, language) {
+        const track = remoteTrackES; // baseline Spanish translation audio
+        if (!track) return;
+        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        audioRelayPCs[listenerId] = pc;
+        pc.addTrack(track);
+        pc.onicecandidate = (e) => {
+            if (e.candidate && signalingWs.readyState === WebSocket.OPEN) {
+                signalingWs.send(JSON.stringify({ type: 'audio_ice', listenerId, candidate: e.candidate }));
+            }
+        };
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        signalingWs.send(JSON.stringify({ type: 'audio_offer', listenerId, sdp: offer.sdp }));
     }
+    function stopAudioRelay(listenerId) {
+        const pc = audioRelayPCs[listenerId];
+        if (pc) { pc.close(); delete audioRelayPCs[listenerId]; }
+    }
+
+    function openDisplay() { window.open(`/display?session=${sessionCode}`, '_blank'); }
+    function openTranscript() { window.open(`/transcript?session=${sessionCode}`, '_blank', 'width=700,height=900'); }
 
     function endSession() {
         if (signalingWs) signalingWs.send(JSON.stringify({ type: 'end_session' }));
-        if (signalingWs) signalingWs.close();
-        if (window.leaderPc) { window.leaderPc.close(); window.leaderPc = null; }
+        teardownLeader();
+        clearResumeState();
         show('screen-landing');
+    }
+    function teardownLeader() {
+        if (signalingWs) { signalingWs.close(); signalingWs = null; }
+        if (pcBase) { pcBase.close(); pcBase = null; }
+        if (pcTurn) { pcTurn.close(); pcTurn = null; }
+        if (pcTranscribe) { pcTranscribe.close(); pcTranscribe = null; transcriptionDc = null; }
+        Object.values(audioRelayPCs).forEach(pc => pc.close());
+        audioRelayPCs = {};
+        if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+        spanishTurn = false;
+        transcriptionMode = 'live';
     }
 
     // ── LISTENER ─────────────────────────────────────────
-
     function joinSession() {
         hideError('listener-error');
         const code = document.getElementById('session-code-input').value.trim().toUpperCase();
         listenerLanguage = document.getElementById('listener-language').value;
-
-        if (!code || code.length !== 6) {
-            showError('listener-error', 'Please enter a valid 6-character session code.');
-            return;
-        }
-
+        if (!code || code.length !== 6) { showError('listener-error', 'Please enter a valid 6-character session code.'); return; }
         sessionCode = code;
+        saveResumeState({ role: 'listener', sessionCode: code, language: listenerLanguage });
         startListenerSession(code, listenerLanguage);
     }
 
     function startListenerSession(code, language) {
-        const captionBox = document.getElementById('caption-box');
-        captionBox.textContent = '';
+        currentRole = 'listener'; sessionCode = code; listenerLanguage = language;
+        const box = document.getElementById('caption-box');
+        box.textContent = ''; box.style.display = ''; box.style.color = ''; box.style.fontSize = '20px';
 
+        // Request-to-speak is only for Spanish (secondary-language) attendees.
+        document.getElementById('speak-btn').style.display = (language === 'spanish') ? 'block' : 'none';
+
+        if (eventSource) eventSource.close();
         eventSource = new EventSource(`/stream/${code}/${language}`);
-
         eventSource.onmessage = (e) => {
             const data = JSON.parse(e.data);
 
             if (data.type === 'session_ended') {
                 eventSource.close();
                 if (signalingWs) signalingWs.close();
-                const box = document.getElementById('caption-box');
-                box.style.display = 'flex';
-                box.style.alignItems = 'center';
-                box.style.justifyContent = 'center';
-                box.style.color = '#718096';
-                box.style.fontSize = '18px';
-                box.innerText = 'This session has ended. Thank you!';
+                if (audioRelayPc) { audioRelayPc.close(); audioRelayPc = null; }
+                clearResumeState();
+                const b = document.getElementById('caption-box');
+                b.style.display = 'flex'; b.style.alignItems = 'center'; b.style.justifyContent = 'center';
+                b.style.color = '#718096'; b.style.fontSize = '18px';
+                b.innerText = 'This session has ended. Thank you!';
                 document.getElementById('listener-status').textContent = 'Session ended';
+                document.getElementById('audio-toggle-btn').style.display = 'none';
                 document.getElementById('speak-btn').style.display = 'none';
-                document.getElementById('speak-status').textContent = '';
+                document.getElementById('listener-notice').classList.remove('active');
+                return;
+            }
+
+            // Spanish-turn notification: only Spanish listeners hold captions.
+            if (data.type === 'spanish_turn') {
+                if (listenerLanguage === 'spanish') {
+                    document.getElementById('listener-notice').classList.toggle('active', data.active);
+                }
                 return;
             }
 
             if (!data.text) return;
-            const box = document.getElementById('caption-box');
-            box.innerText += data.text;
-            box.scrollTop = box.scrollHeight;
+            const b = document.getElementById('caption-box');
+            b.innerText += data.text; b.scrollTop = b.scrollHeight;
         };
+        eventSource.onerror = () => { document.getElementById('listener-status').textContent = 'Reconnecting...'; };
+        eventSource.onopen = () => { document.getElementById('listener-status').textContent = 'Connected'; };
 
-        eventSource.onerror = () => {
-            document.getElementById('listener-status').textContent = 'Reconnecting...';
-        };
-
-        eventSource.onopen = () => {
-            document.getElementById('listener-status').textContent = 'Connected';
-        };
-
-        const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        signalingWs = new WebSocket(`${wsProtocol}//${location.host}?session=${code}&role=listener`);
-
-        signalingWs.onmessage = async (event) => {
-            const msg = JSON.parse(event.data);
-
-            if (msg.type === 'approved') {
-                document.getElementById('speak-status').textContent = 'You are approved — speak now!';
-                document.getElementById('speak-btn').textContent = '⏹ Done speaking';
-                document.getElementById('speak-btn').onclick = doneSpeaking;
-                document.getElementById('speak-btn').disabled = false;
-            }
-
-            if (msg.type === 'denied') {
-                document.getElementById('speak-status').textContent = 'Request was not approved.';
-                document.getElementById('speak-btn').textContent = '🎙 Request to speak';
-                document.getElementById('speak-btn').onclick = requestSpeak;
-            }
-        };
-
+        document.getElementById('audio-toggle-btn').style.display = '';
+        openListenerSignaling(code, language);
         show('screen-listener-live');
     }
 
-    /*async function startListenerWebRTC() {
-        const res = await fetch('/session/listener-secret', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionCode })
-        });
-
-        const data = await res.json();
-        console.log('listener-secret response:', res.status, JSON.stringify(data));
-        const clientSecret = data.value;
-
-        listenerPc = new RTCPeerConnection();
-
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        listenerPc.addTrack(stream.getAudioTracks()[0], stream);
-
-        const dataChannel = listenerPc.createDataChannel('oai-events');
-        dataChannel.onmessage = (e) => {
-            const event = JSON.parse(e.data);
-
-            if (event.type === 'session.input_transcript.delta') {
-
-                signalingWs.send(JSON.stringify({
-                    type: 'listener_transcript',
-                    direction: 'input',
-                    delta: event.delta
-                }));
+    function openListenerSignaling(code, language) {
+        const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        signalingWs = new WebSocket(`${wsProtocol}//${location.host}?session=${code}&role=listener&language=${language}`);
+        signalingWs.onmessage = async (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'welcome') listenerId = msg.listenerId;
+            if (msg.type === 'approved') {
+                document.getElementById('speak-status').textContent = 'Approved — please go to the microphone and speak.';
+                document.getElementById('speak-btn').textContent = '🎙 Request to speak';
+                document.getElementById('speak-btn').disabled = false;
             }
-
-            if (event.type === 'session.output_transcript.delta') {
-                console.log('listener_transcript event:', event.type, 'direction:', event.type === 'session.input_transcript.delta' ? 'input' : 'output', 'signalingWs state:', signalingWs.readyState);
-                signalingWs.send(JSON.stringify({
-                    type: 'listener_transcript',
-                    direction: 'output',
-                    delta: event.delta
-                }));
+            if (msg.type === 'denied') {
+                document.getElementById('speak-status').textContent = 'Request was not approved.';
+                document.getElementById('speak-btn').disabled = false;
+            }
+            if (msg.type === 'audio_offer') await acceptAudioOffer(msg.sdp);
+            if (msg.type === 'audio_ice') {
+                if (audioRelayPc && msg.candidate) { try { await audioRelayPc.addIceCandidate(msg.candidate); } catch(e){} }
             }
         };
-
-        const offer = await listenerPc.createOffer();
-        await listenerPc.setLocalDescription(offer);
-
-        const sdpResponse = await fetch(
-            'https://api.openai.com/v1/realtime/translations/calls',
-            {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${clientSecret}`,
-                    'Content-Type': 'application/sdp'
-                },
-                body: offer.sdp
-            }
-        );
-
-        const answerSdp = await sdpResponse.text();
-        await listenerPc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-
-        console.log('Listener WebRTC connected');
-    }*/
+    }
 
     function requestSpeak() {
         if (!signalingWs || signalingWs.readyState !== WebSocket.OPEN) return;
-        signalingWs.send(JSON.stringify({ type: 'request_speak', language: listenerLanguage }));
+        signalingWs.send(JSON.stringify({ type: 'request_speak' }));
         document.getElementById('speak-status').textContent = 'Request sent — waiting for approval...';
         document.getElementById('speak-btn').disabled = true;
     }
 
-    /*function doneSpeaking() {
-        if (listenerPc) {
-            listenerPc.close();
-            listenerPc = null;
+    async function acceptAudioOffer(sdp) {
+        audioRelayPc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        audioRelayPc.ontrack = (event) => {
+            if (!audioEl) {
+                audioEl = document.createElement('audio');
+                audioEl.autoplay = true; audioEl.playsInline = true;
+                document.body.appendChild(audioEl);
+            }
+            audioEl.srcObject = event.streams[0];
+            audioEl.play().catch(()=>{});
+        };
+        audioRelayPc.onicecandidate = (e) => {
+            if (e.candidate && signalingWs.readyState === WebSocket.OPEN) {
+                signalingWs.send(JSON.stringify({ type: 'audio_ice', candidate: e.candidate }));
+            }
+        };
+        await audioRelayPc.setRemoteDescription({ type: 'offer', sdp });
+        const answer = await audioRelayPc.createAnswer();
+        await audioRelayPc.setLocalDescription(answer);
+        signalingWs.send(JSON.stringify({ type: 'audio_answer', sdp: answer.sdp }));
+    }
+
+    function toggleAudio() {
+        const btn = document.getElementById('audio-toggle-btn');
+        const statusEl = document.getElementById('audio-status');
+        if (audioRelayPc) {
+            signalingWs.send(JSON.stringify({ type: 'stop_audio' }));
+            audioRelayPc.close(); audioRelayPc = null;
+            if (audioEl) audioEl.srcObject = null;
+            btn.textContent = '🔊 Hear translation'; statusEl.textContent = '';
+        } else {
+            signalingWs.send(JSON.stringify({ type: 'request_audio', language: listenerLanguage }));
+            btn.textContent = '🔇 Stop audio'; statusEl.textContent = 'Connecting audio...';
+            // If no audio track is actually flowing within a few seconds,
+            // tell the user instead of leaving "Connecting..." forever.
+            setTimeout(() => {
+                if (audioRelayPc && (!audioEl || !audioEl.srcObject)) {
+                    statusEl.textContent = 'No translated audio is available right now.';
+                }
+            }, 5000);
         }
-        if (!signalingWs || signalingWs.readyState !== WebSocket.OPEN) return;
-        signalingWs.send(JSON.stringify({ type: 'done_speaking' }));
-        document.getElementById('speak-status').textContent = '';
-        document.getElementById('speak-btn').textContent = '🎙 Request to speak';
-        document.getElementById('speak-btn').onclick = requestSpeak;
-        document.getElementById('speak-btn').disabled = false;
-    }*/
-
-    function doneSpeaking() {
-        if (!signalingWs || signalingWs.readyState !== WebSocket.OPEN) return;
-        signalingWs.send(JSON.stringify({ type: 'done_speaking' }));
-        document.getElementById('speak-status').textContent = '';
-        document.getElementById('speak-btn').textContent = '🎙 Request to speak';
-        document.getElementById('speak-btn').onclick = requestSpeak;
-        document.getElementById('speak-btn').disabled = false;
     }
 
-    // ── AUTO-JOIN via URL param ───────────────────────────
-    const urlParams = new URLSearchParams(location.search);
-    if (urlParams.has('join')) {
-        document.getElementById('session-code-input').value = urlParams.get('join');
-        show('screen-listener-onboard');
-    }
+    // ── Reconnect on tab resume ──────────────────────────
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible' || !sessionCode) return;
+        if (currentRole === 'listener') {
+            if (!signalingWs || signalingWs.readyState === WebSocket.CLOSED) openListenerSignaling(sessionCode, listenerLanguage);
+        }
+        if (currentRole === 'leader') {
+            if (!signalingWs || signalingWs.readyState === WebSocket.CLOSED) openLeaderSignaling(sessionCode);
+            const baseDead = !pcBase || ['failed','closed','disconnected'].includes(pcBase.connectionState);
+            if (baseDead) {
+                if (pcBase) pcBase.close();
+                startBaseline(sessionCode).catch(err => console.error('resume baseline failed', err));
+            }
+            const transcribeDead = !pcTranscribe || ['failed','closed','disconnected'].includes(pcTranscribe.connectionState);
+            if (transcribeDead) {
+                if (pcTranscribe) pcTranscribe.close();
+                transcriptionMode = 'live';
+                startTranscription(sessionCode).catch(err => console.error('resume transcription failed', err));
+            }
+        }
+    });
 
+    // ── Modal open/close with scroll-lock ─────────────────
+    let savedScrollY = 0;
     function openModal(id) {
+        savedScrollY = window.scrollY;
+        document.body.style.position = 'fixed';
+        document.body.style.top = `-${savedScrollY}px`;
+        document.body.style.width = '100%';
         document.getElementById(id).classList.add('active');
     }
-
     function closeModal(id) {
         document.getElementById(id).classList.remove('active');
+        document.body.style.position = ''; document.body.style.top = ''; document.body.style.width = '';
+        window.scrollTo(0, savedScrollY);
     }
+
+    // ── Startup: fresh visits land on the main page ───────
+    window.addEventListener('load', () => {
+        const urlParams = new URLSearchParams(location.search);
+        if (urlParams.has('join')) {
+            document.getElementById('session-code-input').value = urlParams.get('join');
+            show('screen-listener-onboard');
+        }
+    });
 </script>
 </body>
 </html>

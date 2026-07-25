@@ -5,81 +5,145 @@ const WebSocket = require('ws');
 
 const PORT = 3000;
 
-// These will hold the connected phone clients, separated by language
+// sessions[code] = {
+//   apiKey,
+//   clients: { english: [SSE res...], spanish: [SSE res...] },
+//   leaderSocket: ws | null,
+//   listenerSockets: { [listenerId]: { ws, language } },
+//   speakQueue: [{ id, language }],
+//   spanishTurn: bool,
+//   createdAt
+// }
 const sessions = {};
 
-function createSession(apiKey, sourceLanguage) {
+function createSession(apiKey) {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-
     sessions[code] = {
         apiKey,
-        sourceLanguage,
-        primarySocket: null,
-        secondarySocket: null,
-        clients: {
-            english: [],
-            spanish: []
-        },
-        speakQueue: [],
+        clients: { english: [], spanish: [] },
         leaderSocket: null,
+        listenerSockets: {},
+        speakQueue: [],
+        spanishTurn: false,
         createdAt: Date.now()
     };
-
     return code;
 }
 
 function broadcast(sessionCode, language, text) {
     const session = sessions[sessionCode];
     if (!session) return;
-
-    const targetClients = session.clients[language];
     const message = `data: ${JSON.stringify({ text })}\n\n`;
-
-    targetClients.forEach(client => {
+    session.clients[language].forEach(client => {
         try {
             client.write(message);
         } catch (err) {
-            console.log(`Error writing to ${language} client, removing.`);
             session.clients[language] = session.clients[language].filter(c => c !== client);
         }
     });
 }
 
-const server = http.createServer((req, res) => {
+// Sends a non-caption control event (e.g. spanish_turn) to every SSE client.
+function broadcastControl(sessionCode, obj) {
+    const session = sessions[sessionCode];
+    if (!session) return;
+    const message = `data: ${JSON.stringify(obj)}\n\n`;
+    [...session.clients.english, ...session.clients.spanish].forEach(client => {
+        try { client.write(message); } catch (e) {}
+    });
+}
 
+function serveFile(res, path, contentType) {
+    fs.readFile(path, (err, data) => {
+        if (err) { res.writeHead(err.code === 'ENOENT' ? 404 : 500); res.end(); return; }
+        res.writeHead(200, { 'Content-Type': contentType });
+        res.end(data);
+    });
+}
+
+const server = http.createServer((req, res) => {
     const parsedUrl = new URL(req.url, `http://localhost:${PORT}`);
     const pathname = parsedUrl.pathname;
-    console.log(pathname);
 
-    // Serve the attendee web page
     if (pathname === '/' || pathname === '/index.html') {
-        fs.readFile('./index.html', (err, data) => {
-            if (err) {
-                res.writeHead(500);
-                res.end('Error loading page');
-                return;
-            }
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=UTF-8' });
-            res.end(data);
-        });
+        serveFile(res, './index.html', 'text/html; charset=UTF-8');
+    }
+    else if (pathname === '/display' || pathname === '/display.html') {
+        serveFile(res, './display.html', 'text/html; charset=UTF-8');
+    }
+    else if (pathname === '/transcript' || pathname === '/transcript.html') {
+        serveFile(res, './transcript.html', 'text/html; charset=UTF-8');
+    }
+    else if (pathname === '/logo.png') {
+        serveFile(res, './recoveryTrans.png', 'image/png');
     }
 
+        // One endpoint, called with targetLanguage 'es' (baseline) or 'en'
+    // (spun up for a Spanish speaker's turn).
     else if (req.method === 'POST' && pathname === '/session/client-secret') {
         let body = '';
         req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', async () => {
-            const { sessionCode } = JSON.parse(body);
+            const { sessionCode, targetLanguage } = JSON.parse(body);
             const session = sessions[sessionCode];
-
             if (!session) {
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Session not found' }));
                 return;
             }
+            if (!['en', 'es'].includes(targetLanguage)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'targetLanguage must be en or es' }));
+                return;
+            }
+            try {
+                const response = await fetch(
+                    'https://api.openai.com/v1/realtime/translations/client_secrets',
+                    {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${session.apiKey}`,
+                            'Content-Type': 'application/json',
+                            'OpenAI-Safety-Identifier': 'recovery-translator'
+                        },
+                        body: JSON.stringify({
+                            session: {
+                                model: 'gpt-realtime-translate',
+                                audio: {
+                                    input: {
+                                        noise_reduction: { type: 'far_field' }
+                                    },
+                                    output: { language: targetLanguage }
+                                }
+                            }
+                        })
+                    }
+                );
+                const data = await response.json();
+                res.writeHead(response.status, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(data));
+            } catch (err) {
+                res.writeHead(502, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Failed to reach OpenAI' }));
+            }
+        });
+    }
 
-            const response = await fetch(
-                'https://api.openai.com/v1/realtime/translations/client_secrets',
-                {
+        // Mints a client secret for the dedicated English transcription session
+    // (separate from the translate sessions above -- different endpoint/shape).
+    else if (req.method === 'POST' && pathname === '/session/transcription-secret') {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', async () => {
+            const { sessionCode } = JSON.parse(body);
+            const session = sessions[sessionCode];
+            if (!session) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Session not found' }));
+                return;
+            }
+            try {
+                const response = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${session.apiKey}`,
@@ -88,134 +152,82 @@ const server = http.createServer((req, res) => {
                     },
                     body: JSON.stringify({
                         session: {
-                            model: 'gpt-realtime-translate',
+                            type: 'transcription',
                             audio: {
-                                input: { transcription: { model: 'gpt-realtime-whisper' } },
-                                output: { language: session.sourceLanguage === 'en' ? 'es' : 'en' }
+                                input: {
+                                    transcription: { model: 'gpt-realtime-whisper', language: 'en', delay: 'high' },
+                                    noise_reduction: { type: 'far_field' },
+                                    turn_detection: null // gpt-realtime-whisper: manual commit only
+                                }
                             }
                         }
                     })
-                }
-            );
-
-            const data = await response.json();
-            res.writeHead(response.status, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(data));
+                });
+                const data = await response.json();
+                res.writeHead(response.status, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(data));
+            } catch (err) {
+                res.writeHead(502, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Failed to reach OpenAI' }));
+            }
         });
     }
 
     else if (req.method === 'POST' && pathname === '/session/create') {
         let body = '';
-
-        req.on('data', chunk => {
-            body += chunk.toString();
-        });
-
+        req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', () => {
             let creds = JSON.parse(body);
-
             if (creds.accessCode !== process.env.ACCESS_CODE) {
                 res.writeHead(401, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Invalid access code' }));
                 return;
             }
-
-            if(creds.apiKey === 'default-api-key') {
+            if (creds.apiKey === 'default-api-key') {
                 creds.apiKey = process.env.OPENAI_API_KEY;
             }
-
-            const code = createSession(creds.apiKey, creds.sourceLanguage);
-
+            const code = createSession(creds.apiKey);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ sessionCode: code }));
         });
+    }
+
+    else if (req.method === 'GET' && pathname === '/session/check') {
+        const code = parsedUrl.searchParams.get('code');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ exists: !!sessions[code] }));
     }
 
     else if (req.method === 'GET' && pathname.startsWith('/stream/')) {
         const parts = pathname.split('/');
         const sessionCode = parts[2];
         const language = parts[3];
-
         if (!sessions[sessionCode]) {
             res.writeHead(404, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Session not found' }));
             return;
         }
-
         if (!['english', 'spanish'].includes(language)) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Invalid language' }));
             return;
         }
-
         res.writeHead(200, {
             'Content-Type': 'text/event-stream; charset=UTF-8',
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive'
         });
-
         sessions[sessionCode].clients[language].push(res);
-        console.log(`[${sessionCode}] ${language} client connected. Total: ${sessions[sessionCode].clients[language].length}`);
+
+        // Tell a late-joining client if a Spanish turn is already in progress.
+        if (sessions[sessionCode].spanishTurn) {
+            try { res.write(`data: ${JSON.stringify({ type: 'spanish_turn', active: true })}\n\n`); } catch (e) {}
+        }
 
         req.on('close', () => {
             if (!sessions[sessionCode]) return;
-            sessions[sessionCode].clients[language] = sessions[sessionCode].clients[language].filter(c => c !== res);
-            console.log(`[${sessionCode}] ${language} client disconnected. Total: ${sessions[sessionCode].clients[language].length}`);
-        });
-    }
-
-    else if (pathname === '/logo.png') {
-        fs.readFile('./recoveryTrans.png', (err, data) => {
-            if (err) { res.writeHead(404); res.end(); return; }
-            res.writeHead(200, { 'Content-Type': 'image/png' });
-            res.end(data);
-        });
-    }
-
-    else if (req.method === 'POST' && pathname === '/session/listener-secret') {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', async () => {
-            const { sessionCode } = JSON.parse(body);
-            const session = sessions[sessionCode];
-
-            if (!session) {
-                res.writeHead(404, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'Session not found' }));
-                return;
-            }
-
-            // Flip the language direction vs the primary session
-            const inputLang = session.sourceLanguage === 'en' ? 'es' : 'en';
-            const outputLang = session.sourceLanguage === 'en' ? 'en' : 'es';
-
-            const response = await fetch(
-                'https://api.openai.com/v1/realtime/translations/client_secrets',
-                {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${session.apiKey}`,
-                        'Content-Type': 'application/json',
-                        'OpenAI-Safety-Identifier': 'recovery-translator'
-                    },
-                    body: JSON.stringify({
-                        session: {
-                            model: 'gpt-realtime-translate',
-                            audio: {
-                                input: {
-                                    language: inputLang,
-                                    transcription: { model: 'gpt-realtime-whisper' }
-                                },
-                                output: { language: outputLang }
-                            }
-                        }
-                    })
-                }
-            );
-
-            const data = await response.json();
-            res.writeHead(response.status, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(data));
+            sessions[sessionCode].clients[language] =
+                sessions[sessionCode].clients[language].filter(c => c !== res);
         });
     }
 
@@ -236,223 +248,112 @@ wss.on('connection', (ws, req) => {
     const sessionCode = params.get('session');
     const role = params.get('role');
 
-    if (!sessions[sessionCode]) {
-        ws.close();
-        return;
-    }
+    const session = sessions[sessionCode];
+    if (!session) { ws.close(); return; }
 
     if (role === 'leader') {
-        sessions[sessionCode].leaderSocket = ws;
-        console.log(`[${sessionCode}] Leader signaling connected`);
+        session.leaderSocket = ws;
 
         ws.on('message', (data) => {
             const msg = JSON.parse(data);
-            if (msg.type === 'transcript') {
-                const session = sessions[sessionCode];
-                const flipped = session.flipped;
 
-                if (msg.direction === 'input') {
-                    const lang = flipped ? 'spanish' : (session.sourceLanguage === 'en' ? 'english' : 'spanish');
-                    broadcast(sessionCode, lang, msg.delta);
-                }
-                if (msg.direction === 'output') {
-                    const lang = flipped ? 'english' : (session.sourceLanguage === 'en' ? 'spanish' : 'english');
-                    broadcast(sessionCode, lang, msg.delta);
-                }
+            if (msg.type === 'transcript') {
+                broadcast(sessionCode, msg.language, msg.delta);
             }
 
-            if (msg.type === 'flip_confirmed') {
-                const session = sessions[sessionCode];
-                if (!session.pendingApproval) return;
-                broadcastAll(sessionCode, '\n\n');
-                const pendingListener = session.pendingApproval;
-                pendingListener.ws.send(JSON.stringify({ type: 'approved' }));
-                session.pendingApproval = null;
+            // Start/stop of a Spanish speaker's turn.
+            if (msg.type === 'spanish_turn') {
+                session.spanishTurn = !!msg.active;
+                broadcastControl(sessionCode, { type: 'spanish_turn', active: session.spanishTurn });
             }
 
             if (msg.type === 'approve') {
-                const request = sessions[sessionCode].speakQueue.find(r => r.id === msg.id);
-                if (request) {
-                    sessions[sessionCode].speakQueue = sessions[sessionCode].speakQueue.filter(r => r.id !== msg.id);
-                    sessions[sessionCode].flipped = true;
-                    sessions[sessionCode].pendingApproval = request;
-
-                    const leaderSocket = sessions[sessionCode].leaderSocket;
-                    if (leaderSocket && leaderSocket.readyState === WebSocket.OPEN) {
-                        leaderSocket.send(JSON.stringify({
-                            type: 'flip_language',
-                            language: sessions[sessionCode].sourceLanguage === 'en' ? 'en' : 'es'
-                        }));
+                const reqItem = session.speakQueue.find(r => r.id === msg.id);
+                session.speakQueue = session.speakQueue.filter(r => r.id !== msg.id);
+                if (reqItem) {
+                    const entry = session.listenerSockets[reqItem.id];
+                    if (entry && entry.ws.readyState === WebSocket.OPEN) {
+                        entry.ws.send(JSON.stringify({ type: 'approved' }));
                     }
                 }
             }
 
-            if (msg.type === 'resume_primary') {
-                console.log(`[${sessionCode}] Resuming primary, flipping back to ${sessions[sessionCode].sourceLanguage === 'en' ? 'es' : 'en'}`);
-                sessions[sessionCode].flipped = false;
-                broadcastAll(sessionCode, '\n\n');
-                resumePrimary(sessionCode);
-                const leaderSocket = sessions[sessionCode].leaderSocket;
-                if (leaderSocket && leaderSocket.readyState === WebSocket.OPEN) {
-                    leaderSocket.send(JSON.stringify({
-                        type: 'flip_language',
-                        language: sessions[sessionCode].sourceLanguage === 'en' ? 'es' : 'en'
-                    }));
-                }
-            }
-
             if (msg.type === 'deny') {
-                const request = sessions[sessionCode].speakQueue.find(r => r.id === msg.id);
-                if (request) {
-                    request.ws.send(JSON.stringify({ type: 'denied' }));
-                    sessions[sessionCode].speakQueue = sessions[sessionCode].speakQueue.filter(r => r.id !== msg.id);
+                const reqItem = session.speakQueue.find(r => r.id === msg.id);
+                session.speakQueue = session.speakQueue.filter(r => r.id !== msg.id);
+                if (reqItem) {
+                    const entry = session.listenerSockets[reqItem.id];
+                    if (entry && entry.ws.readyState === WebSocket.OPEN) {
+                        entry.ws.send(JSON.stringify({ type: 'denied' }));
+                    }
                 }
             }
 
             if (msg.type === 'end_session') {
                 endSession(sessionCode);
             }
+
+            if (msg.type === 'audio_offer' || msg.type === 'audio_ice') {
+                const entry = session.listenerSockets[msg.listenerId];
+                if (entry && entry.ws.readyState === WebSocket.OPEN) {
+                    entry.ws.send(JSON.stringify(msg));
+                }
+            }
         });
 
-        ws.on('close', () => {
-            console.log(`[${sessionCode}] Leader disconnected`);
-        });
+        ws.on('close', () => {});
 
     } else if (role === 'listener') {
         const id = Math.random().toString(36).substring(2, 8);
+        const language = params.get('language') || 'english';
         ws.listenerId = id;
+        session.listenerSockets[id] = { ws, language };
+        ws.send(JSON.stringify({ type: 'welcome', listenerId: id }));
 
         ws.on('message', (data) => {
             const msg = JSON.parse(data);
 
-            if (msg.type === 'listener_transcript') {
-                const session = sessions[sessionCode];
-                if (msg.direction === 'input') {
-                    const inputLang = session.sourceLanguage === 'en' ? 'spanish' : 'english';
-                    broadcast(sessionCode, inputLang, msg.delta);
-                }
-                if (msg.direction === 'output') {
-                    const outputLang = session.sourceLanguage === 'en' ? 'english' : 'spanish';
-                    broadcast(sessionCode, outputLang, msg.delta);
-                }
-            }
-
             if (msg.type === 'request_speak') {
-                const request = { id, ws, language: msg.language };
-                sessions[sessionCode].speakQueue.push(request);
-                console.log(`[${sessionCode}] Speak request from ${id}`);
-
-                const leaderSocket = sessions[sessionCode].leaderSocket;
+                if (!session.speakQueue.find(r => r.id === id)) {
+                    session.speakQueue.push({ id, language });
+                }
+                const leaderSocket = session.leaderSocket;
                 if (leaderSocket && leaderSocket.readyState === WebSocket.OPEN) {
-                    leaderSocket.send(JSON.stringify({
-                        type: 'speak_request',
-                        id,
-                        language: msg.language
-                    }));
+                    leaderSocket.send(JSON.stringify({ type: 'speak_request', id, language }));
                 }
             }
 
-            if (msg.type === 'done_speaking') {
-                //resumePrimary(sessionCode);
+            if (['request_audio', 'stop_audio', 'audio_answer', 'audio_ice'].includes(msg.type)) {
+                const leaderSocket = session.leaderSocket;
+                if (leaderSocket && leaderSocket.readyState === WebSocket.OPEN) {
+                    leaderSocket.send(JSON.stringify({ ...msg, listenerId: id }));
+                }
             }
+        });
+
+        ws.on('close', () => {
+            delete session.listenerSockets[id];
+            session.speakQueue = session.speakQueue.filter(r => r.id !== id);
         });
     }
 });
 
-function pausePrimary(sessionCode) {
-    sessions[sessionCode].isPaused = true;
-    console.log(`[${sessionCode}] Primary stream paused`);
-}
-
-function resumePrimary(sessionCode) {
-    //sessions[sessionCode].isPaused = false;
-    sessions[sessionCode].flipped = false;
-    console.log(`[${sessionCode}] Primary stream resumed`);
-}
-
 function endSession(sessionCode) {
     const session = sessions[sessionCode];
     if (!session) return;
-
     const endMessage = `data: ${JSON.stringify({ type: 'session_ended' })}\n\n`;
     [...session.clients.english, ...session.clients.spanish].forEach(client => {
-        try { client.write(endMessage); } catch(e) {}
+        try { client.write(endMessage); } catch (e) {}
     });
-
-    // Give clients 1 second to receive the message before closing
     setTimeout(() => {
         if (!sessions[sessionCode]) return;
         [...session.clients.english, ...session.clients.spanish].forEach(client => {
-            try { client.end(); } catch(e) {}
+            try { client.end(); } catch (e) {}
         });
-        if (session.primarySocket) session.primarySocket.close();
-        if (session.secondarySocket) session.secondarySocket.close();
         if (session.leaderSocket) session.leaderSocket.close();
+        Object.values(session.listenerSockets).forEach(entry => {
+            try { entry.ws.close(); } catch (e) {}
+        });
         delete sessions[sessionCode];
-        console.log(`[${sessionCode}] Session ended`);
     }, 1000);
-}
-
-function broadcastAll(sessionCode, text) {
-    broadcast(sessionCode, 'english', text);
-    broadcast(sessionCode, 'spanish', text);
-}
-
-function connectToOpenAI(sessionCode) {
-    const session = sessions[sessionCode];
-
-    const ws = new WebSocket(
-        'wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate',
-        {
-            headers: {
-                'Authorization': `Bearer ${session.apiKey}`,
-                'OpenAI-Safety-Identifier': sessionCode
-            }
-        }
-    );
-
-    ws.on('open', () => {
-        console.log(`[${sessionCode}] Connected to OpenAI`);
-
-        ws.send(JSON.stringify({
-            type: 'session.update',
-            session: {
-                audio: {
-                    input: {
-                        transcription: {
-                            model: 'gpt-realtime-whisper'
-                        }
-                    },
-                    output: {
-                        language: session.sourceLanguage === 'en' ? 'es' : 'en'
-                    }
-                }
-            }
-        }));
-    });
-
-    ws.on('message', (data) => {
-        const event = JSON.parse(data);
-        console.log(`[${sessionCode}] Event: ${event.type}`);
-
-        if (event.type === 'session.input_transcript.delta') {
-            const inputLang = session.sourceLanguage === 'en' ? 'english' : 'spanish';
-            broadcast(sessionCode, inputLang, event.delta);
-        }
-
-        if (event.type === 'session.output_transcript.delta') {
-            const outputLang = session.sourceLanguage === 'en' ? 'spanish' : 'english';
-            broadcast(sessionCode, outputLang, event.delta);
-        }
-    });
-
-    ws.on('error', (err) => {
-        console.error(`[${sessionCode}] OpenAI error:`, err.message);
-    });
-
-    ws.on('close', () => {
-        console.log(`[${sessionCode}] OpenAI connection closed`);
-    });
-
-    return ws;
 }
