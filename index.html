@@ -474,7 +474,7 @@
             if (oaiEvent.type === 'session.output_transcript.delta') {
                 writeCaption('caption-box-es', 'spanish', oaiEvent.delta);
             }
-        }, (track) => { remoteTrackES = track; });
+        }, (track) => { remoteTrackES = track; logDebug('es', { type: 'received translated AUDIO track from OpenAI' }); });
     }
 
     // On-demand session for a Spanish turn: output English. Its
@@ -661,6 +661,7 @@
 
     async function startAudioRelay(listenerId, language) {
         const track = remoteTrackES; // baseline Spanish translation audio
+        logDebug('audio-relay', { type: track ? 'track available, starting relay' : 'NO TRACK -- baseline never received translated audio from OpenAI' });
         if (!track) return;
         const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
         audioRelayPCs[listenerId] = pc;
@@ -670,6 +671,8 @@
                 signalingWs.send(JSON.stringify({ type: 'audio_ice', listenerId, candidate: e.candidate }));
             }
         };
+        pc.onconnectionstatechange = () => logDebug('audio-relay', { type: `relay connection: ${pc.connectionState}` });
+        pc.oniceconnectionstatechange = () => logDebug('audio-relay', { type: `relay ICE: ${pc.iceConnectionState}` });
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         signalingWs.send(JSON.stringify({ type: 'audio_offer', listenerId, sdp: offer.sdp }));
