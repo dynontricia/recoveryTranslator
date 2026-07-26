@@ -94,6 +94,7 @@
             font-size: 14px; font-weight: 600; margin-bottom: 12px;
         }
         .turn-indicator.active { display: block; }
+        #screen-leader-live.mode-transcript-only .bilingual-only { display: none; }
 
         .status-dot {
             width: 10px; height: 10px; border-radius: 50%; background: #48bb78;
@@ -191,6 +192,12 @@
                 <option value="near_field">Someone is holding the phone or speaking close to it (headset, hand-held, podium mic near the mouth)</option>
             </select>
 
+            <label>What does this session need?</label>
+            <select id="session-mode">
+                <option value="bilingual" selected>Full translation — English captions and a live Spanish translation</option>
+                <option value="transcript_only">English captions only — no Spanish translation</option>
+            </select>
+
             <p class="small" style="margin-top:-10px;margin-bottom:20px;text-align:left">
                 English is captioned live for the room. Spanish attendees get a live Spanish translation.
                 When a Spanish speaker needs to address the room, use the toggle or approve their request.
@@ -215,14 +222,16 @@
 
                     <hr class="divider"/>
 
-                    <div class="turn-indicator" id="turn-indicator">
-                        🎤 Spanish speaker has the floor — English box shows the live translation.
-                    </div>
-                    <button class="btn btn-success" id="spanish-toggle" onclick="toggleSpanishTurn()">🎤 Spanish speaker (switch)</button>
+                    <div class="bilingual-only">
+                        <div class="turn-indicator" id="turn-indicator">
+                            🎤 Spanish speaker has the floor — English box shows the live translation.
+                        </div>
+                        <button class="btn btn-success" id="spanish-toggle" onclick="toggleSpanishTurn()">🎤 Spanish speaker (switch)</button>
 
-                    <h2 style="margin-top:8px">Speak requests</h2>
-                    <div class="speak-queue" id="speak-queue">
-                        <p style="font-size:14px;color:#718096">No pending requests.</p>
+                        <h2 style="margin-top:8px">Speak requests</h2>
+                        <div class="speak-queue" id="speak-queue">
+                            <p style="font-size:14px;color:#718096">No pending requests.</p>
+                        </div>
                     </div>
 
                     <hr class="divider"/>
@@ -234,7 +243,7 @@
                         <div class="caption-panel-label">English</div>
                         <div class="caption-box" id="caption-box-en"></div>
                     </div>
-                    <div class="caption-panel caption-panel-es">
+                    <div class="caption-panel caption-panel-es bilingual-only">
                         <div class="caption-panel-label">Español</div>
                         <div class="caption-box" id="caption-box-es"></div>
                     </div>
@@ -259,12 +268,15 @@
             <div class="error" id="listener-error"></div>
             <label>Session code</label>
             <input type="text" id="session-code-input" placeholder="ABC123" maxlength="6"
-                   oninput="this.value = this.value.toUpperCase()"/>
+                   oninput="this.value = this.value.toUpperCase(); checkSessionModeForJoin();"/>
             <label>Preferred language</label>
             <select id="listener-language">
                 <option value="english">English</option>
-                <option value="spanish">Español</option>
+                <option value="spanish" id="listener-language-spanish">Español</option>
             </select>
+            <p class="small" id="transcript-only-note" style="display:none;text-align:left;margin-top:-10px">
+                This session is English captions only — no Spanish translation is available.
+            </p>
             <button class="btn btn-primary" onclick="joinSession()">Join</button>
             <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
         </div>
@@ -305,9 +317,9 @@
         <h2>Privacy Policy</h2>
         <p>Recovery Translator is a free tool built to support recovery communities. We take your privacy seriously.</p>
         <h3>Audio &amp; Transcripts</h3>
-        <p>Audio is streamed directly from the session leader's device to OpenAI's translation API for real-time processing. Recovery Translator does not store, record, or retain any audio or transcript data on its servers.</p>
+        <p>Audio is streamed directly from the session leader's device to OpenAI's transcription and translation APIs for real-time processing. Recovery Translator does not store, record, or retain any audio or transcript data on its servers.</p>
         <h3>OpenAI Data Policy</h3>
-        <p>Audio and transcripts are processed by OpenAI and may be retained by OpenAI for up to 30 days for abuse monitoring purposes. This monitoring is automated. Recovery Translator's use case — spoken language interpretation for recovery meetings — does not fall into any prohibited category.</p>
+        <p>Audio and transcripts are processed by OpenAI and may be retained by OpenAI for up to 30 days for abuse monitoring purposes. This monitoring is automated. Recovery Translator's use case — spoken language captioning and interpretation for recovery meetings — does not fall into any prohibited category.</p>
         <p>If no abuse is detected by OpenAI's automated systems, no human at OpenAI will review your audio or transcripts.</p>
         <p>OpenAI does not use API data to train its models. For more information, visit openai.com/privacy.</p>
         <h3>Session Data</h3>
@@ -326,19 +338,21 @@
         <h2>Step-by-Step Instructions</h2>
         <h3>Session Leaders</h3>
         <ol>
-            <li>Tap <strong>I am a session leader</strong>, enter your access code and OpenAI API key, and tap <strong>Start session.</strong></li>
-            <li>Share the QR code or session code. Optionally open the <strong>big display screen</strong> for a room projector.</li>
-            <li>Speak normally — English is captioned live, and Spanish attendees get a live translation.</li>
-            <li>When a Spanish speaker will address the room, tap <strong>Spanish speaker (switch)</strong>, or <strong>Approve</strong> their request in the queue. The English box then shows the live English translation of their Spanish.</li>
-            <li>When they finish, tap the toggle again to return to the main session.</li>
+            <li>Tap <strong>I am a session leader</strong>, enter your access code and OpenAI API key.</li>
+            <li>Choose how people are speaking into the session — <strong>across the room</strong> (Owl, conference mic, speakerphone) or <strong>close to the device</strong> (headset, hand-held, podium mic) — and tap <strong>Start session.</strong></li>
+            <li>Choose <strong>Full translation</strong> if you need a live Spanish translation, or <strong>English captions only</strong> for an English-only meeting that just wants live captions.</li>
+            <li>Share the QR code or session code. Optionally open the <strong>big display screen</strong> for a room projector, or the <strong>captions-only pop-out window</strong> for a simpler view.</li>
+            <li>Speak normally — English is captioned live as you talk.</li>
+            <li><em>Full translation only:</em> when a Spanish speaker will address the room, tap <strong>Spanish speaker (switch)</strong>, or <strong>Approve</strong> their request in the queue. The English box then shows a live English translation of their Spanish, and Spanish attendees see a reminder to listen to the room. Tap the toggle again when they're done.</li>
             <li>Tap <strong>End session</strong> when the meeting is over.</li>
         </ol>
         <h3>Listeners</h3>
         <ol>
-            <li>Scan the QR code or tap <strong>I am a listener</strong>, enter the session code, choose your language, and tap <strong>Join.</strong></li>
-            <li>Captions appear automatically. Tap <strong>🔊 Hear translation</strong> to also listen to the translated audio.</li>
+            <li>Scan the QR code or tap <strong>I am a listener</strong>, enter the session code, choose your language (Spanish only appears for sessions that support it), and tap <strong>Join.</strong></li>
+            <li>Captions appear automatically. Spanish attendees can tap <strong>🔊 Hear translation</strong> to also listen to the translated audio.</li>
             <li>Spanish attendees can tap <strong>🎙 Request to speak</strong> to ask to address the room.</li>
             <li>When a Spanish speaker has the floor, Spanish screens pause captions and show a reminder to listen to the room.</li>
+            <li>If you switch apps or lock your phone briefly, reopening the page should reconnect you automatically.</li>
         </ol>
     </div>
 </div>
@@ -348,13 +362,15 @@
     <div class="modal">
         <button class="modal-close" onclick="closeModal('modal-about')">✕</button>
         <h2>About Recovery Translator</h2>
-        <p>Recovery Translator provides real-time spoken language interpretation for recovery meetings, area committees, and service assemblies.</p>
+        <p>Recovery Translator provides real-time spoken language interpretation and live captioning for recovery meetings, area committees, and service assemblies.</p>
         <h3>How It Works</h3>
-        <p>The leader opens a session and shares a QR code. English speech is transcribed live for the room, and translated to Spanish for Spanish-speaking attendees. When a Spanish speaker addresses the room, the leader switches modes and the room sees a live English translation of their words.</p>
+        <p>The leader opens a session, chooses whether they need Spanish translation or just English captions, and shares a QR code. English speech is captioned live for the room the whole time. In full-translation sessions, Spanish-speaking attendees also get a continuous live Spanish translation. When a Spanish speaker addresses the room, the leader switches modes (or approves their request), and the room sees a live English translation of their words until the leader switches back.</p>
+        <h3>Two Session Types</h3>
+        <p><strong>Full translation</strong> runs English captions and a live Spanish translation side by side. <strong>English captions only</strong> is a lighter option for English-only meetings that still want live, accurate captions — useful for anyone hard of hearing.</p>
         <h3>Getting Access</h3>
         <p>Leaders need an access code and an OpenAI API key. Listeners only need the session code. To request an access code, contact <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
         <h3>Cost</h3>
-        <p>Recovery Translator uses OpenAI's real-time translation API, billed to the leader's OpenAI account. Please check OpenAI's current realtime API pricing for an up-to-date estimate.</p>
+        <p>Recovery Translator uses OpenAI's real-time transcription and translation APIs, billed to the leader's OpenAI account. Full-translation sessions run more concurrent connections than captions-only sessions. Please check OpenAI's current realtime API pricing for an up-to-date estimate.</p>
         <h3>Built for Recovery</h3>
         <p>Built by and for the recovery community, with anonymity and accessibility in mind. Free to use and open source.</p>
     </div>
@@ -372,6 +388,7 @@
     let pcTurn = null;   // on-demand session, output: en (used during a Spanish turn)
     let pcTranscribe = null, transcriptionDc = null; // dedicated English transcription
     let spanishTurn = false;
+    let sessionMode = 'bilingual'; // 'bilingual' | 'transcript_only'
     let remoteTrackES = null;                // baseline translated (Spanish) audio, for "hear translation"
     let audioRelayPCs = {};                  // listenerId -> RTCPeerConnection
 
@@ -411,6 +428,23 @@
     }
 
     // Resume-state (reconnect after a backgrounded tab)
+    async function checkSessionModeForJoin() {
+        const code = document.getElementById('session-code-input').value.trim();
+        const spanishOption = document.getElementById('listener-language-spanish');
+        const note = document.getElementById('transcript-only-note');
+        if (code.length !== 6) { spanishOption.style.display = ''; note.style.display = 'none'; return; }
+        try {
+            const res = await fetch(`/session/check?code=${code}`);
+            const data = await res.json();
+            const transcriptOnly = data.exists && data.mode === 'transcript_only';
+            spanishOption.style.display = transcriptOnly ? 'none' : '';
+            note.style.display = transcriptOnly ? '' : 'none';
+            if (transcriptOnly && document.getElementById('listener-language').value === 'spanish') {
+                document.getElementById('listener-language').value = 'english';
+            }
+        } catch (e) { /* leave as-is if the check fails */ }
+    }
+
     function saveResumeState(s) { localStorage.setItem('rt-session', JSON.stringify(s)); }
     function clearResumeState() { localStorage.removeItem('rt-session'); }
     function getResumeState() { try { return JSON.parse(localStorage.getItem('rt-session')); } catch(e){ return null; } }
@@ -421,16 +455,18 @@
         const accessCode = document.getElementById('access-code').value.trim();
         let apiKey = document.getElementById('api-key').value.trim();
         const micDistance = document.getElementById('mic-distance').value;
+        const mode = document.getElementById('session-mode').value;
         if (!accessCode) { showError('leader-error', 'Please enter the access code.'); return; }
         if (!apiKey) apiKey = 'default-api-key';
         try {
             const res = await fetch('/session/create', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ accessCode, apiKey, micDistance })
+                body: JSON.stringify({ accessCode, apiKey, micDistance, mode })
             });
             const data = await res.json();
             if (!res.ok) { showError('leader-error', data.error || 'Failed to create session.'); return; }
             sessionCode = data.sessionCode;
+            sessionMode = mode;
             saveResumeState({ role: 'leader', sessionCode });
             await startLeaderSession(sessionCode);
         } catch (err) { showError('leader-error', 'Could not connect to server.'); }
@@ -447,11 +483,18 @@
         document.getElementById('caption-box-es').textContent = '';
         const dbg = document.getElementById('debug-log'); if (dbg) dbg.textContent = '';
 
+        document.getElementById('screen-leader-live')
+            .classList.toggle('mode-transcript-only', sessionMode === 'transcript_only');
+
         openLeaderSignaling(code);
         micStream = await navigator.mediaDevices.getUserMedia({
             audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
         });
-        await Promise.all([startBaseline(code), startTranscription(code)]);
+        if (sessionMode === 'transcript_only') {
+            await startTranscription(code); // English captions only -- no Spanish translation session
+        } else {
+            await Promise.all([startBaseline(code), startTranscription(code)]);
+        }
         show('screen-leader-live');
     }
 
@@ -766,7 +809,7 @@
         eventSource.onerror = () => { document.getElementById('listener-status').textContent = 'Reconnecting...'; };
         eventSource.onopen = () => { document.getElementById('listener-status').textContent = 'Connected'; };
 
-        document.getElementById('audio-toggle-btn').style.display = '';
+        document.getElementById('audio-toggle-btn').style.display = (language === 'spanish') ? '' : 'none';
         openListenerSignaling(code, language);
         show('screen-listener-live');
     }
@@ -885,6 +928,7 @@
         const urlParams = new URLSearchParams(location.search);
         if (urlParams.has('join')) {
             document.getElementById('session-code-input').value = urlParams.get('join');
+            checkSessionModeForJoin();
             show('screen-listener-onboard');
         }
     });

@@ -16,11 +16,12 @@ const PORT = 3000;
 // }
 const sessions = {};
 
-function createSession(apiKey, micDistance) {
+function createSession(apiKey, micDistance, mode) {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     sessions[code] = {
         apiKey,
         micDistance: micDistance === 'near_field' ? 'near_field' : 'far_field',
+        mode: mode === 'transcript_only' ? 'transcript_only' : 'bilingual',
         clients: { english: [], spanish: [] },
         leaderSocket: null,
         listenerSockets: {},
@@ -187,7 +188,7 @@ const server = http.createServer((req, res) => {
             if (creds.apiKey === 'default-api-key') {
                 creds.apiKey = process.env.OPENAI_API_KEY;
             }
-            const code = createSession(creds.apiKey, creds.micDistance);
+            const code = createSession(creds.apiKey, creds.micDistance, creds.mode);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ sessionCode: code }));
         });
@@ -195,8 +196,9 @@ const server = http.createServer((req, res) => {
 
     else if (req.method === 'GET' && pathname === '/session/check') {
         const code = parsedUrl.searchParams.get('code');
+        const session = sessions[code];
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ exists: !!sessions[code] }));
+        res.end(JSON.stringify({ exists: !!session, mode: session ? session.mode : null }));
     }
 
     else if (req.method === 'GET' && pathname.startsWith('/stream/')) {
@@ -263,7 +265,7 @@ wss.on('connection', (ws, req) => {
             }
 
             // Start/stop of a Spanish speaker's turn.
-            if (msg.type === 'spanish_turn') {
+            if (msg.type === 'spanish_turn' && session.mode !== 'transcript_only') {
                 session.spanishTurn = !!msg.active;
                 broadcastControl(sessionCode, { type: 'spanish_turn', active: session.spanishTurn });
             }
