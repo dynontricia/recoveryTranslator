@@ -295,6 +295,7 @@
 
             <button class="btn btn-secondary" id="audio-toggle-btn" onclick="toggleAudio()">🔊 Hear translation</button>
             <p class="small" id="audio-status"></p>
+            <p class="small" id="audio-debug" style="font-family:ui-monospace,monospace;color:#a0aec0;text-align:left"></p>
 
             <button class="btn btn-secondary" id="speak-btn" style="display:none" onclick="requestSpeak()">🎙 Request to speak</button>
             <p class="small" id="speak-status"></p>
@@ -843,9 +844,27 @@
         document.getElementById('speak-btn').disabled = true;
     }
 
+    function audioDebugLine(msg) {
+        const el = document.getElementById('audio-debug');
+        if (!el) return;
+        el.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
+    }
+
     async function acceptAudioOffer(sdp) {
+        const dbg = document.getElementById('audio-debug');
+        if (dbg) dbg.textContent = '';
         audioRelayPc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+        audioRelayPc.onconnectionstatechange = () => audioDebugLine(`connection: ${audioRelayPc.connectionState}`);
+        audioRelayPc.oniceconnectionstatechange = () => audioDebugLine(`ICE: ${audioRelayPc.iceConnectionState}`);
+
         audioRelayPc.ontrack = (event) => {
+            const track = event.track;
+            audioDebugLine(`ontrack fired: kind=${track.kind} readyState=${track.readyState} muted=${track.muted} streams=${event.streams.length}`);
+            track.onmute = () => audioDebugLine('track MUTED (no audio data arriving)');
+            track.onunmute = () => audioDebugLine('track unmuted (audio data flowing)');
+            track.onended = () => audioDebugLine('track ENDED');
+
             if (!audioEl) {
                 audioEl = document.createElement('audio');
                 audioEl.autoplay = true; audioEl.playsInline = true;
@@ -868,16 +887,20 @@
     // Mobile browsers block audio autoplay unless play() is called as the
     // direct result of a tap. By the time translated audio actually arrives,
     // the original "Hear translation" tap is several async steps removed, so
-    // autoplay is often silently blocked. Surface that clearly and let a
-    // second, in-the-moment tap satisfy the browser's gesture requirement.
+    // autoplay is often silently blocked. Surface the REAL error (not a
+    // generic message) and let a second, in-the-moment tap satisfy the
+    // browser's gesture requirement.
     function attemptAudioPlay() {
         if (!audioEl) return;
         const statusEl = document.getElementById('audio-status');
         audioEl.play().then(() => {
+            const track = audioEl.srcObject && audioEl.srcObject.getAudioTracks()[0];
+            audioDebugLine(`play() succeeded. track muted=${track ? track.muted : 'n/a'}, paused=${audioEl.paused}, volume=${audioEl.volume}`);
             statusEl.textContent = '';
             statusEl.onclick = null;
             statusEl.style.cursor = ''; statusEl.style.textDecoration = ''; statusEl.style.fontWeight = '';
-        }).catch(() => {
+        }).catch((err) => {
+            audioDebugLine(`play() REJECTED: ${err.name} — ${err.message}`);
             statusEl.textContent = '🔊 Tap here to start audio';
             statusEl.style.cursor = 'pointer';
             statusEl.style.textDecoration = 'underline';
