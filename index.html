@@ -852,7 +852,7 @@
                 document.body.appendChild(audioEl);
             }
             audioEl.srcObject = event.streams[0];
-            audioEl.play().catch(()=>{});
+            attemptAudioPlay();
         };
         audioRelayPc.onicecandidate = (e) => {
             if (e.candidate && signalingWs.readyState === WebSocket.OPEN) {
@@ -865,6 +865,27 @@
         signalingWs.send(JSON.stringify({ type: 'audio_answer', sdp: answer.sdp }));
     }
 
+    // Mobile browsers block audio autoplay unless play() is called as the
+    // direct result of a tap. By the time translated audio actually arrives,
+    // the original "Hear translation" tap is several async steps removed, so
+    // autoplay is often silently blocked. Surface that clearly and let a
+    // second, in-the-moment tap satisfy the browser's gesture requirement.
+    function attemptAudioPlay() {
+        if (!audioEl) return;
+        const statusEl = document.getElementById('audio-status');
+        audioEl.play().then(() => {
+            statusEl.textContent = '';
+            statusEl.onclick = null;
+            statusEl.style.cursor = ''; statusEl.style.textDecoration = ''; statusEl.style.fontWeight = '';
+        }).catch(() => {
+            statusEl.textContent = '🔊 Tap here to start audio';
+            statusEl.style.cursor = 'pointer';
+            statusEl.style.textDecoration = 'underline';
+            statusEl.style.fontWeight = '600';
+            statusEl.onclick = attemptAudioPlay;
+        });
+    }
+
     function toggleAudio() {
         const btn = document.getElementById('audio-toggle-btn');
         const statusEl = document.getElementById('audio-status');
@@ -872,7 +893,9 @@
             signalingWs.send(JSON.stringify({ type: 'stop_audio' }));
             audioRelayPc.close(); audioRelayPc = null;
             if (audioEl) audioEl.srcObject = null;
-            btn.textContent = '🔊 Hear translation'; statusEl.textContent = '';
+            btn.textContent = '🔊 Hear translation';
+            statusEl.textContent = ''; statusEl.onclick = null;
+            statusEl.style.cursor = ''; statusEl.style.textDecoration = ''; statusEl.style.fontWeight = '';
         } else {
             signalingWs.send(JSON.stringify({ type: 'request_audio', language: listenerLanguage }));
             btn.textContent = '🔇 Stop audio'; statusEl.textContent = 'Connecting audio...';
