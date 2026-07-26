@@ -717,7 +717,11 @@
         if (!track) return;
         const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
         audioRelayPCs[listenerId] = pc;
-        pc.addTrack(track);
+        // Wrap in a MediaStream explicitly -- addTrack(track) alone doesn't
+        // guarantee the receiving side's ontrack.streams array is populated,
+        // and an empty streams array means the listener has nothing to hand
+        // to its <audio> element even though the connection itself is fine.
+        pc.addTrack(track, new MediaStream([track]));
         pc.onicecandidate = (e) => {
             if (e.candidate && signalingWs.readyState === WebSocket.OPEN) {
                 signalingWs.send(JSON.stringify({ type: 'audio_ice', listenerId, candidate: e.candidate }));
@@ -870,7 +874,9 @@
                 audioEl.autoplay = true; audioEl.playsInline = true;
                 document.body.appendChild(audioEl);
             }
-            audioEl.srcObject = event.streams[0];
+            // Defensive fallback: if streams is empty for any reason, build a
+            // MediaStream from the track directly rather than assigning undefined.
+            audioEl.srcObject = event.streams[0] || new MediaStream([track]);
             attemptAudioPlay();
         };
         audioRelayPc.onicecandidate = (e) => {
