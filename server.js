@@ -16,10 +16,11 @@ const PORT = 3000;
 // }
 const sessions = {};
 
-function createSession(apiKey) {
+function createSession(apiKey, micDistance) {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     sessions[code] = {
         apiKey,
+        micDistance: micDistance === 'near_field' ? 'near_field' : 'far_field',
         clients: { english: [], spanish: [] },
         leaderSocket: null,
         listenerSockets: {},
@@ -111,7 +112,7 @@ const server = http.createServer((req, res) => {
                                 model: 'gpt-realtime-translate',
                                 audio: {
                                     input: {
-                                        noise_reduction: { type: 'far_field' }
+                                        noise_reduction: { type: session.micDistance }
                                     },
                                     output: { language: targetLanguage }
                                 }
@@ -156,7 +157,7 @@ const server = http.createServer((req, res) => {
                             audio: {
                                 input: {
                                     transcription: { model: 'gpt-realtime-whisper', language: 'en', delay: 'high' },
-                                    noise_reduction: { type: 'far_field' },
+                                    noise_reduction: { type: session.micDistance },
                                     turn_detection: null // gpt-realtime-whisper: manual commit only
                                 }
                             }
@@ -186,7 +187,7 @@ const server = http.createServer((req, res) => {
             if (creds.apiKey === 'default-api-key') {
                 creds.apiKey = process.env.OPENAI_API_KEY;
             }
-            const code = createSession(creds.apiKey);
+            const code = createSession(creds.apiKey, creds.micDistance);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ sessionCode: code }));
         });

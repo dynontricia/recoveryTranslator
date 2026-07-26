@@ -184,6 +184,13 @@
             <input type="password" id="access-code" placeholder="Enter access code"/>
             <label>OpenAI API key</label>
             <input type="password" id="api-key" placeholder="sk-..."/>
+
+            <label>How are people speaking into this session?</label>
+            <select id="mic-distance">
+                <option value="far_field" selected>The phone or mic is across the room (Owl, conference mic, speakerphone on a table)</option>
+                <option value="near_field">Someone is holding the phone or speaking close to it (headset, hand-held, podium mic near the mouth)</option>
+            </select>
+
             <p class="small" style="margin-top:-10px;margin-bottom:20px;text-align:left">
                 English is captioned live for the room. Spanish attendees get a live Spanish translation.
                 When a Spanish speaker needs to address the room, use the toggle or approve their request.
@@ -413,12 +420,13 @@
         hideError('leader-error');
         const accessCode = document.getElementById('access-code').value.trim();
         let apiKey = document.getElementById('api-key').value.trim();
+        const micDistance = document.getElementById('mic-distance').value;
         if (!accessCode) { showError('leader-error', 'Please enter the access code.'); return; }
         if (!apiKey) apiKey = 'default-api-key';
         try {
             const res = await fetch('/session/create', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ accessCode, apiKey })
+                body: JSON.stringify({ accessCode, apiKey, micDistance })
             });
             const data = await res.json();
             if (!res.ok) { showError('leader-error', data.error || 'Failed to create session.'); return; }
