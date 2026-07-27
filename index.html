@@ -396,6 +396,26 @@
     let spanishTurn = false;
     let sessionMode = 'bilingual'; // 'bilingual' | 'transcript_only'
     let remoteTrackES = null;                // baseline translated (Spanish) audio, for "hear translation"
+    let warmSinkEl = null;
+
+    // A received remote WebRTC track appears to stay dormant (no real audio
+    // decoded, even though it reports "live"/"unmuted") until it's attached
+    // to an actual playback sink somewhere on this page -- confirmed by
+    // testing: forwarding it to a listener alone produced silence, but as
+    // soon as it was also played locally, both the local AND the relayed
+    // copies started working. This keeps that sink attached automatically,
+    // silently, the instant the track arrives -- no button press required.
+    function keepTrackWarm(track) {
+        if (!warmSinkEl) {
+            warmSinkEl = document.createElement('audio');
+            warmSinkEl.autoplay = true;
+            warmSinkEl.muted = true; // silent on the leader's own device
+            document.body.appendChild(warmSinkEl);
+        }
+        warmSinkEl.srcObject = new MediaStream([track]);
+        warmSinkEl.play().catch(() => {}); // muted autoplay is never blocked
+    }
+
     let localTestAudioEl = null;
     let audioRelayPCs = {};                  // listenerId -> RTCPeerConnection
 
@@ -533,7 +553,11 @@
             if (oaiEvent.type === 'session.output_transcript.delta') {
                 writeCaption('caption-box-es', 'spanish', oaiEvent.delta);
             }
-        }, (track) => { remoteTrackES = track; logDebug('es', { type: 'received translated AUDIO track from OpenAI' }); });
+        }, (track) => {
+            remoteTrackES = track;
+            logDebug('es', { type: 'received translated AUDIO track from OpenAI' });
+            keepTrackWarm(track);
+        });
     }
 
     // On-demand session for a Spanish turn: output English. Its
