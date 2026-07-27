@@ -80,7 +80,7 @@ const server = http.createServer((req, res) => {
         serveFile(res, './recoveryTrans.png', 'image/png');
     }
 
-        // One endpoint, called with targetLanguage 'es' (baseline) or 'en'
+    // One endpoint, called with targetLanguage 'es' (baseline) or 'en'
     // (spun up for a Spanish speaker's turn).
     else if (req.method === 'POST' && pathname === '/session/client-secret') {
         let body = '';
@@ -131,7 +131,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Mints a client secret for the dedicated English transcription session
+    // Mints a client secret for the dedicated English transcription session
     // (separate from the translate sessions above -- different endpoint/shape).
     else if (req.method === 'POST' && pathname === '/session/transcription-secret') {
         let body = '';

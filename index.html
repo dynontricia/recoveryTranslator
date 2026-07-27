@@ -223,6 +223,10 @@
                     <hr class="divider"/>
 
                     <div class="bilingual-only">
+                        <button class="btn btn-secondary" id="local-audio-test-btn" onclick="testLocalAudio()">🔈 Test translated audio here (on this device)</button>
+                        <p class="small" id="local-audio-status"></p>
+                        <p class="small" id="local-audio-meter" style="font-family:ui-monospace,monospace;text-align:left"></p>
+
                         <div class="turn-indicator" id="turn-indicator">
                             🎤 Spanish speaker has the floor — English box shows the live translation.
                         </div>
@@ -296,6 +300,7 @@
             <button class="btn btn-secondary" id="audio-toggle-btn" onclick="toggleAudio()">🔊 Hear translation</button>
             <p class="small" id="audio-status"></p>
             <p class="small" id="audio-debug" style="font-family:ui-monospace,monospace;color:#a0aec0;text-align:left"></p>
+            <p class="small" id="phone-audio-meter" style="font-family:ui-monospace,monospace;text-align:left"></p>
 
             <button class="btn btn-secondary" id="speak-btn" style="display:none" onclick="requestSpeak()">🎙 Request to speak</button>
             <p class="small" id="speak-status"></p>
@@ -391,6 +396,7 @@
     let spanishTurn = false;
     let sessionMode = 'bilingual'; // 'bilingual' | 'transcript_only'
     let remoteTrackES = null;                // baseline translated (Spanish) audio, for "hear translation"
+    let localTestAudioEl = null;
     let audioRelayPCs = {};                  // listenerId -> RTCPeerConnection
 
     // Listener state
@@ -408,6 +414,7 @@
         let line;
         if (ev.type === 'session.input_transcript.delta') line = `[${tag}] IN  ${JSON.stringify(ev.delta)}`;
         else if (ev.type === 'session.output_transcript.delta') line = `[${tag}] OUT ${JSON.stringify(ev.delta)}`;
+        else if (ev.type === 'session.output_audio.delta') line = `[${tag}] *** RAW AUDIO DELTA EVENT (${(ev.delta||'').length} base64 chars) *** this would mean WebRTC IS also sending JSON audio deltas`;
         else line = `[${tag}] ${ev.type}`;
         panel.textContent += `${new Date().toLocaleTimeString()}  ${line}\n`;
         panel.scrollTop = panel.scrollHeight;
@@ -711,6 +718,62 @@
         clearQueueItem(id);
     }
 
+    // Isolation test: plays remoteTrackES (the raw audio OpenAI returned)
+    // directly on THIS device, with no relay/listener involved at all. If
+    // this is also silent despite a successful play(), the track itself has
+    // no real speech content and the fix is on the OpenAI session config,
+    // not the relay or the listener's phone. If this DOES play audibly, the
+    // problem is specific to the listener's device (volume/mute switch).
+    let meterAnimFrame = null;
+
+    function testLocalAudio() {
+        const statusEl = document.getElementById('local-audio-status');
+        if (!remoteTrackES) {
+            statusEl.textContent = 'No audio track available yet from the baseline session.';
+            return;
+        }
+        if (!localTestAudioEl) {
+            localTestAudioEl = document.createElement('audio');
+            localTestAudioEl.autoplay = true;
+            localTestAudioEl.controls = true; // visible native play bar -- tap it directly
+            localTestAudioEl.style.display = 'block';
+            localTestAudioEl.style.width = '100%';
+            localTestAudioEl.style.marginTop = '8px';
+            document.getElementById('local-audio-status').insertAdjacentElement('afterend', localTestAudioEl);
+        }
+        const stream = new MediaStream([remoteTrackES]);
+        localTestAudioEl.srcObject = stream;
+        localTestAudioEl.play().then(() => {
+            statusEl.textContent = `Playing locally — track muted=${remoteTrackES.muted}, readyState=${remoteTrackES.readyState}. Native controls are visible below; the meter shows real signal level regardless of speaker output.`;
+        }).catch(err => {
+            statusEl.textContent = `play() failed here too: ${err.name} — ${err.message}. Try tapping the native play button below directly.`;
+        });
+
+        // Independent of play()/speakers/mute switches: reads the actual PCM
+        // sample data flowing through the track. If this stays near zero,
+        // the track itself carries no real audio content -- an OpenAI-side
+        // config question, not a playback bug. If it moves, audio is real
+        // and the problem is downstream (device output/routing).
+        if (meterAnimFrame) cancelAnimationFrame(meterAnimFrame);
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        const meterEl = document.getElementById('local-audio-meter');
+
+        function meterLoop() {
+            analyser.getByteFrequencyData(data);
+            const avg = data.reduce((a, b) => a + b, 0) / data.length;
+            const bars = '█'.repeat(Math.round(avg / 4));
+            meterEl.textContent = `signal level: ${avg.toFixed(1)} / 255  ${bars}`;
+            meterEl.style.color = avg > 3 ? '#38a169' : '#a0aec0';
+            meterAnimFrame = requestAnimationFrame(meterLoop);
+        }
+        meterLoop();
+    }
+
     async function startAudioRelay(listenerId, language) {
         const track = remoteTrackES; // baseline Spanish translation audio
         logDebug('audio-relay', { type: track ? 'track available, starting relay' : 'NO TRACK -- baseline never received translated audio from OpenAI' });
@@ -848,6 +911,36 @@
         document.getElementById('speak-btn').disabled = true;
     }
 
+    let phoneMeterAnimFrame = null;
+
+    // Same independent signal-level check as the leader's local test, run on
+    // the listener's own device against the RELAYED stream specifically --
+    // isolates whether the relay hop (not just OpenAI) is carrying real audio.
+    function startPhoneMeter(stream) {
+        const meterEl = document.getElementById('phone-audio-meter');
+        if (!meterEl) return;
+        if (phoneMeterAnimFrame) cancelAnimationFrame(phoneMeterAnimFrame);
+        try {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioCtx.createMediaStreamSource(stream);
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 512;
+            source.connect(analyser);
+            const data = new Uint8Array(analyser.frequencyBinCount);
+            function loop() {
+                analyser.getByteFrequencyData(data);
+                const avg = data.reduce((a, b) => a + b, 0) / data.length;
+                const bars = '█'.repeat(Math.round(avg / 4));
+                meterEl.textContent = `signal level: ${avg.toFixed(1)} / 255  ${bars}`;
+                meterEl.style.color = avg > 3 ? '#38a169' : '#a0aec0';
+                phoneMeterAnimFrame = requestAnimationFrame(loop);
+            }
+            loop();
+        } catch (err) {
+            meterEl.textContent = `meter unavailable: ${err.message}`;
+        }
+    }
+
     function audioDebugLine(msg) {
         const el = document.getElementById('audio-debug');
         if (!el) return;
@@ -872,12 +965,18 @@
             if (!audioEl) {
                 audioEl = document.createElement('audio');
                 audioEl.autoplay = true; audioEl.playsInline = true;
-                document.body.appendChild(audioEl);
+                audioEl.controls = true; // visible native play bar -- tap it directly
+                audioEl.style.display = 'block';
+                audioEl.style.width = '100%';
+                audioEl.style.marginTop = '8px';
+                document.getElementById('audio-debug').insertAdjacentElement('afterend', audioEl);
             }
             // Defensive fallback: if streams is empty for any reason, build a
             // MediaStream from the track directly rather than assigning undefined.
-            audioEl.srcObject = event.streams[0] || new MediaStream([track]);
+            const relayedStream = event.streams[0] || new MediaStream([track]);
+            audioEl.srcObject = relayedStream;
             attemptAudioPlay();
+            startPhoneMeter(relayedStream);
         };
         audioRelayPc.onicecandidate = (e) => {
             if (e.candidate && signalingWs.readyState === WebSocket.OPEN) {
