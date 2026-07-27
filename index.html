@@ -223,10 +223,6 @@
                     <hr class="divider"/>
 
                     <div class="bilingual-only">
-                        <button class="btn btn-secondary" id="local-audio-test-btn" onclick="testLocalAudio()">🔈 Test translated audio here (on this device)</button>
-                        <p class="small" id="local-audio-status"></p>
-                        <p class="small" id="local-audio-meter" style="font-family:ui-monospace,monospace;text-align:left"></p>
-
                         <div class="turn-indicator" id="turn-indicator">
                             🎤 Spanish speaker has the floor — English box shows the live translation.
                         </div>
@@ -252,14 +248,6 @@
                         <div class="caption-box" id="caption-box-es"></div>
                     </div>
 
-                    <details id="debug-details" style="margin-top:4px">
-                        <summary style="cursor:pointer;font-size:12px;color:#718096">Debug log (caption troubleshooting)</summary>
-                        <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin:8px 0;font-weight:500">
-                            <input type="checkbox" id="debug-toggle" style="width:auto;margin:0" onchange="debugEnabled = this.checked"/>
-                            Log every event from both sessions (es = baseline, en = Spanish turn)
-                        </label>
-                        <pre id="debug-log" style="max-height:220px;overflow:auto;background:#1a202c;color:#68d391;font-size:11px;line-height:1.4;padding:10px;border-radius:8px;white-space:pre-wrap;word-break:break-word;margin:0"></pre>
-                    </details>
                 </div>
             </div>
         </div>
@@ -299,8 +287,6 @@
 
             <button class="btn btn-secondary" id="audio-toggle-btn" onclick="toggleAudio()">🔊 Hear translation</button>
             <p class="small" id="audio-status"></p>
-            <p class="small" id="audio-debug" style="font-family:ui-monospace,monospace;color:#a0aec0;text-align:left"></p>
-            <p class="small" id="phone-audio-meter" style="font-family:ui-monospace,monospace;text-align:left"></p>
 
             <button class="btn btn-secondary" id="speak-btn" style="display:none" onclick="requestSpeak()">🎙 Request to speak</button>
             <p class="small" id="speak-status"></p>
@@ -416,7 +402,6 @@
         warmSinkEl.play().catch(() => {}); // muted autoplay is never blocked
     }
 
-    let localTestAudioEl = null;
     let audioRelayPCs = {};                  // listenerId -> RTCPeerConnection
 
     // Listener state
@@ -426,20 +411,6 @@
 
     // Debug logging: tags each OpenAI event with which session it came from
     // ('es' = baseline session, 'en' = the on-demand Spanish-turn session).
-    let debugEnabled = false;
-    function logDebug(tag, ev) {
-        if (!debugEnabled) return;
-        const panel = document.getElementById('debug-log');
-        if (!panel) return;
-        let line;
-        if (ev.type === 'session.input_transcript.delta') line = `[${tag}] IN  ${JSON.stringify(ev.delta)}`;
-        else if (ev.type === 'session.output_transcript.delta') line = `[${tag}] OUT ${JSON.stringify(ev.delta)}`;
-        else if (ev.type === 'session.output_audio.delta') line = `[${tag}] *** RAW AUDIO DELTA EVENT (${(ev.delta||'').length} base64 chars) *** this would mean WebRTC IS also sending JSON audio deltas`;
-        else line = `[${tag}] ${ev.type}`;
-        panel.textContent += `${new Date().toLocaleTimeString()}  ${line}\n`;
-        panel.scrollTop = panel.scrollHeight;
-    }
-
     function show(id) {
         document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
         document.getElementById(id).classList.add('active');
@@ -509,7 +480,6 @@
         new QRCode(document.getElementById('qr-container'), { text: url, width: 180, height: 180 });
         document.getElementById('caption-box-en').textContent = '';
         document.getElementById('caption-box-es').textContent = '';
-        const dbg = document.getElementById('debug-log'); if (dbg) dbg.textContent = '';
 
         document.getElementById('screen-leader-live')
             .classList.toggle('mode-transcript-only', sessionMode === 'transcript_only');
@@ -555,7 +525,6 @@
             }
         }, (track) => {
             remoteTrackES = track;
-            logDebug('es', { type: 'received translated AUDIO track from OpenAI' });
             keepTrackWarm(track);
         });
     }
@@ -588,6 +557,8 @@
     //                           (discard the garbage), then insert a line
     //                           break and return to 'live'
     let transcriptionMode = 'live';
+    let transcriptionPauseTimer = null;
+    const TRANSCRIPTION_PAUSE_COMMIT_MS = 2500;
 
     async function startTranscription(code) {
         const res = await fetch('/session/transcription-secret', {
@@ -616,13 +587,25 @@
     }
 
     function handleTranscriptionEvent(ev) {
-        logDebug('transcribe', ev);
-
         if (ev.type === 'conversation.item.input_audio_transcription.delta') {
             if (transcriptionMode === 'live' || transcriptionMode === 'flushing-for-turn') {
                 writeCaption('caption-box-en', 'english', ev.delta);
             }
             // 'held' and 'flushing-for-resume': swallow silently
+
+            // Bound the buffer: whisper's transcription session never auto-
+            // segments (no VAD), and we don't commit on a timer either (that
+            // caused mid-word chopping). Instead, commit only after a real
+            // pause in speech -- if no new text has arrived for a couple
+            // seconds, that's a natural sentence boundary, safe to flush.
+            // Without this, the buffer grows unboundedly for the whole
+            // meeting, which likely explains thinner coverage over time.
+            if (transcriptionMode === 'live') {
+                if (transcriptionPauseTimer) clearTimeout(transcriptionPauseTimer);
+                transcriptionPauseTimer = setTimeout(() => {
+                    if (transcriptionMode === 'live') commitTranscription();
+                }, TRANSCRIPTION_PAUSE_COMMIT_MS);
+            }
         }
 
         if (ev.type === 'conversation.item.input_audio_transcription.completed') {
@@ -633,6 +616,8 @@
                 writeCaption('caption-box-en', 'english', '\n\n');
                 transcriptionMode = 'live';
             }
+            // else: a routine pause-triggered commit finished -- nothing to do,
+            // deltas for the next segment will keep appending normally.
         }
 
         // Safety net: an empty-buffer commit (e.g. toggled with no speech yet)
@@ -670,11 +655,7 @@
         if (onTrack) pc.ontrack = (e) => onTrack(e.track);
 
         const dc = pc.createDataChannel('oai-events');
-        dc.onmessage = (e) => {
-            const ev = JSON.parse(e.data);
-            logDebug(targetLanguage, ev);
-            onEvent(ev);
-        };
+        dc.onmessage = (e) => onEvent(JSON.parse(e.data));
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
@@ -697,6 +678,7 @@
         // Flush the transcription session's in-flight English tail before we
         // stop displaying it -- commit, keep printing until 'completed', then
         // a line break and hold (see handleTranscriptionEvent).
+        if (transcriptionPauseTimer) { clearTimeout(transcriptionPauseTimer); transcriptionPauseTimer = null; }
         transcriptionMode = 'flushing-for-turn';
         commitTranscription();
         await startTurnSession(sessionCode);
@@ -748,59 +730,8 @@
     // no real speech content and the fix is on the OpenAI session config,
     // not the relay or the listener's phone. If this DOES play audibly, the
     // problem is specific to the listener's device (volume/mute switch).
-    let meterAnimFrame = null;
-
-    function testLocalAudio() {
-        const statusEl = document.getElementById('local-audio-status');
-        if (!remoteTrackES) {
-            statusEl.textContent = 'No audio track available yet from the baseline session.';
-            return;
-        }
-        if (!localTestAudioEl) {
-            localTestAudioEl = document.createElement('audio');
-            localTestAudioEl.autoplay = true;
-            localTestAudioEl.controls = true; // visible native play bar -- tap it directly
-            localTestAudioEl.style.display = 'block';
-            localTestAudioEl.style.width = '100%';
-            localTestAudioEl.style.marginTop = '8px';
-            document.getElementById('local-audio-status').insertAdjacentElement('afterend', localTestAudioEl);
-        }
-        const stream = new MediaStream([remoteTrackES]);
-        localTestAudioEl.srcObject = stream;
-        localTestAudioEl.play().then(() => {
-            statusEl.textContent = `Playing locally — track muted=${remoteTrackES.muted}, readyState=${remoteTrackES.readyState}. Native controls are visible below; the meter shows real signal level regardless of speaker output.`;
-        }).catch(err => {
-            statusEl.textContent = `play() failed here too: ${err.name} — ${err.message}. Try tapping the native play button below directly.`;
-        });
-
-        // Independent of play()/speakers/mute switches: reads the actual PCM
-        // sample data flowing through the track. If this stays near zero,
-        // the track itself carries no real audio content -- an OpenAI-side
-        // config question, not a playback bug. If it moves, audio is real
-        // and the problem is downstream (device output/routing).
-        if (meterAnimFrame) cancelAnimationFrame(meterAnimFrame);
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const source = audioCtx.createMediaStreamSource(stream);
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 512;
-        source.connect(analyser);
-        const data = new Uint8Array(analyser.frequencyBinCount);
-        const meterEl = document.getElementById('local-audio-meter');
-
-        function meterLoop() {
-            analyser.getByteFrequencyData(data);
-            const avg = data.reduce((a, b) => a + b, 0) / data.length;
-            const bars = '█'.repeat(Math.round(avg / 4));
-            meterEl.textContent = `signal level: ${avg.toFixed(1)} / 255  ${bars}`;
-            meterEl.style.color = avg > 3 ? '#38a169' : '#a0aec0';
-            meterAnimFrame = requestAnimationFrame(meterLoop);
-        }
-        meterLoop();
-    }
-
     async function startAudioRelay(listenerId, language) {
         const track = remoteTrackES; // baseline Spanish translation audio
-        logDebug('audio-relay', { type: track ? 'track available, starting relay' : 'NO TRACK -- baseline never received translated audio from OpenAI' });
         if (!track) return;
         const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
         audioRelayPCs[listenerId] = pc;
@@ -814,8 +745,6 @@
                 signalingWs.send(JSON.stringify({ type: 'audio_ice', listenerId, candidate: e.candidate }));
             }
         };
-        pc.onconnectionstatechange = () => logDebug('audio-relay', { type: `relay connection: ${pc.connectionState}` });
-        pc.oniceconnectionstatechange = () => logDebug('audio-relay', { type: `relay ICE: ${pc.iceConnectionState}` });
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         signalingWs.send(JSON.stringify({ type: 'audio_offer', listenerId, sdp: offer.sdp }));
@@ -844,6 +773,7 @@
         if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
         spanishTurn = false;
         transcriptionMode = 'live';
+        if (transcriptionPauseTimer) { clearTimeout(transcriptionPauseTimer); transcriptionPauseTimer = null; }
     }
 
     // ── LISTENER ─────────────────────────────────────────
@@ -935,72 +865,24 @@
         document.getElementById('speak-btn').disabled = true;
     }
 
-    let phoneMeterAnimFrame = null;
-
-    // Same independent signal-level check as the leader's local test, run on
-    // the listener's own device against the RELAYED stream specifically --
-    // isolates whether the relay hop (not just OpenAI) is carrying real audio.
-    function startPhoneMeter(stream) {
-        const meterEl = document.getElementById('phone-audio-meter');
-        if (!meterEl) return;
-        if (phoneMeterAnimFrame) cancelAnimationFrame(phoneMeterAnimFrame);
-        try {
-            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const source = audioCtx.createMediaStreamSource(stream);
-            const analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 512;
-            source.connect(analyser);
-            const data = new Uint8Array(analyser.frequencyBinCount);
-            function loop() {
-                analyser.getByteFrequencyData(data);
-                const avg = data.reduce((a, b) => a + b, 0) / data.length;
-                const bars = '█'.repeat(Math.round(avg / 4));
-                meterEl.textContent = `signal level: ${avg.toFixed(1)} / 255  ${bars}`;
-                meterEl.style.color = avg > 3 ? '#38a169' : '#a0aec0';
-                phoneMeterAnimFrame = requestAnimationFrame(loop);
-            }
-            loop();
-        } catch (err) {
-            meterEl.textContent = `meter unavailable: ${err.message}`;
-        }
-    }
-
-    function audioDebugLine(msg) {
-        const el = document.getElementById('audio-debug');
-        if (!el) return;
-        el.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
-    }
-
     async function acceptAudioOffer(sdp) {
-        const dbg = document.getElementById('audio-debug');
-        if (dbg) dbg.textContent = '';
         audioRelayPc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-
-        audioRelayPc.onconnectionstatechange = () => audioDebugLine(`connection: ${audioRelayPc.connectionState}`);
-        audioRelayPc.oniceconnectionstatechange = () => audioDebugLine(`ICE: ${audioRelayPc.iceConnectionState}`);
 
         audioRelayPc.ontrack = (event) => {
             const track = event.track;
-            audioDebugLine(`ontrack fired: kind=${track.kind} readyState=${track.readyState} muted=${track.muted} streams=${event.streams.length}`);
-            track.onmute = () => audioDebugLine('track MUTED (no audio data arriving)');
-            track.onunmute = () => audioDebugLine('track unmuted (audio data flowing)');
-            track.onended = () => audioDebugLine('track ENDED');
-
             if (!audioEl) {
                 audioEl = document.createElement('audio');
                 audioEl.autoplay = true; audioEl.playsInline = true;
-                audioEl.controls = true; // visible native play bar -- tap it directly
+                audioEl.controls = true; // lets the listener pause/adjust volume directly
                 audioEl.style.display = 'block';
                 audioEl.style.width = '100%';
                 audioEl.style.marginTop = '8px';
-                document.getElementById('audio-debug').insertAdjacentElement('afterend', audioEl);
+                document.getElementById('audio-status').insertAdjacentElement('afterend', audioEl);
             }
             // Defensive fallback: if streams is empty for any reason, build a
             // MediaStream from the track directly rather than assigning undefined.
-            const relayedStream = event.streams[0] || new MediaStream([track]);
-            audioEl.srcObject = relayedStream;
+            audioEl.srcObject = event.streams[0] || new MediaStream([track]);
             attemptAudioPlay();
-            startPhoneMeter(relayedStream);
         };
         audioRelayPc.onicecandidate = (e) => {
             if (e.candidate && signalingWs.readyState === WebSocket.OPEN) {
@@ -1016,20 +898,16 @@
     // Mobile browsers block audio autoplay unless play() is called as the
     // direct result of a tap. By the time translated audio actually arrives,
     // the original "Hear translation" tap is several async steps removed, so
-    // autoplay is often silently blocked. Surface the REAL error (not a
-    // generic message) and let a second, in-the-moment tap satisfy the
-    // browser's gesture requirement.
+    // autoplay is often silently blocked. If so, offer a second tap here,
+    // which does count as a fresh gesture.
     function attemptAudioPlay() {
         if (!audioEl) return;
         const statusEl = document.getElementById('audio-status');
         audioEl.play().then(() => {
-            const track = audioEl.srcObject && audioEl.srcObject.getAudioTracks()[0];
-            audioDebugLine(`play() succeeded. track muted=${track ? track.muted : 'n/a'}, paused=${audioEl.paused}, volume=${audioEl.volume}`);
             statusEl.textContent = '';
             statusEl.onclick = null;
             statusEl.style.cursor = ''; statusEl.style.textDecoration = ''; statusEl.style.fontWeight = '';
-        }).catch((err) => {
-            audioDebugLine(`play() REJECTED: ${err.name} — ${err.message}`);
+        }).catch(() => {
             statusEl.textContent = '🔊 Tap here to start audio';
             statusEl.style.cursor = 'pointer';
             statusEl.style.textDecoration = 'underline';
