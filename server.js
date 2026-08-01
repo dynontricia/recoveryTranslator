@@ -1,6 +1,7 @@
 require('dotenv').config();
 const http = require('http');
 const fs = require('fs');
+const crypto = require('crypto');
 const WebSocket = require('ws');
 
 const PORT = 3000;
@@ -80,7 +81,7 @@ const server = http.createServer((req, res) => {
         serveFile(res, './recoveryTrans.png', 'image/png');
     }
 
-    // One endpoint, called with targetLanguage 'es' (baseline) or 'en'
+        // One endpoint, called with targetLanguage 'es' (baseline) or 'en'
     // (spun up for a Spanish speaker's turn).
     else if (req.method === 'POST' && pathname === '/session/client-secret') {
         let body = '';
@@ -131,7 +132,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Mints a client secret for the dedicated English transcription session
+        // Mints a client secret for the dedicated English transcription session
     // (separate from the translate sessions above -- different endpoint/shape).
     else if (req.method === 'POST' && pathname === '/session/transcription-secret') {
         let body = '';
@@ -231,6 +232,51 @@ const server = http.createServer((req, res) => {
             if (!sessions[sessionCode]) return;
             sessions[sessionCode].clients[language] =
                 sessions[sessionCode].clients[language].filter(c => c !== res);
+        });
+    }
+
+        // Zoom RTMS webhook. Handles two things:
+        //   1. endpoint.url_validation -- Zoom's one-time challenge to prove we
+        //      control this URL, sent the moment this URL is saved in the Zoom
+        //      Platform Studio console. We must echo back a specific HMAC-signed
+        //      response within a short window or the URL is rejected.
+        //   2. meeting.rtms_started / meeting.rtms_stopped -- the real lifecycle
+        //      events, telling us when to open (and later close) the RTMS media
+        //      connection for a given meeting. For now this just logs them --
+        //      actually connecting to the RTMS media stream and piping audio
+        //      into our OpenAI sessions is the next phase, once we've confirmed
+    //      the webhook itself is reachable and verified.
+    else if (req.method === 'POST' && pathname === '/zoom/rtms-webhook') {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', () => {
+            let payload;
+            try { payload = JSON.parse(body); } catch (e) {
+                res.writeHead(400); res.end('Invalid JSON'); return;
+            }
+
+            if (payload.event === 'endpoint.url_validation') {
+                const plainToken = payload.payload && payload.payload.plainToken;
+                const secret = process.env.ZOOM_WEBHOOK_SECRET_TOKEN;
+                if (!plainToken || !secret) {
+                    console.error('RTMS validation failed: missing plainToken or ZOOM_WEBHOOK_SECRET_TOKEN');
+                    res.writeHead(400); res.end('Missing token'); return;
+                }
+                const encryptedToken = crypto
+                    .createHmac('sha256', secret)
+                    .update(plainToken)
+                    .digest('hex');
+                console.log('RTMS URL validation received, responding with signed token');
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ plainToken, encryptedToken }));
+                return;
+            }
+
+            // Real lifecycle events. Just log for now -- connecting to the
+            // actual RTMS media stream comes next, once this endpoint is
+            // confirmed reachable and verified in the Zoom console.
+            console.log('RTMS webhook event:', payload.event, JSON.stringify(payload.payload || {}));
+            res.writeHead(200); res.end('ok');
         });
     }
 
