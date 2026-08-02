@@ -280,6 +280,75 @@ const server = http.createServer((req, res) => {
         });
     }
 
+        // OAuth redirect target. Zoom sends the user here (with a one-time
+        // ?code=...) after they click Allow on the app's consent screen. We
+        // exchange that code for an access/refresh token, per Zoom's documented
+        // authorization_code flow. This URL itself is what needs to be entered
+    // as the app's development_redirect_uri in the Zoom console.
+    else if (req.method === 'GET' && pathname === '/zoom/oauth/callback') {
+        const code = parsedUrl.searchParams.get('code');
+        if (!code) {
+            res.writeHead(400, { 'Content-Type': 'text/html' });
+            res.end('<p>Missing authorization code.</p>');
+            return;
+        }
+
+        const clientId = process.env.ZOOM_CLIENT_ID;
+        const clientSecret = process.env.ZOOM_CLIENT_SECRET;
+        // Must exactly match the redirect_uri registered in the Zoom console,
+        // including scheme, host, and path.
+        const redirectUri = `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host}/zoom/oauth/callback`;
+
+        if (!clientId || !clientSecret) {
+            res.writeHead(500, { 'Content-Type': 'text/html' });
+            res.end('<p>Server is missing ZOOM_CLIENT_ID / ZOOM_CLIENT_SECRET.</p>');
+            return;
+        }
+
+        // The outer request handler isn't declared async, so the actual
+        // token-exchange work runs in this immediately-invoked async function.
+        (async () => {
+            try {
+                const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+                const params = new URLSearchParams({
+                    grant_type: 'authorization_code',
+                    code,
+                    redirect_uri: redirectUri
+                });
+
+                const tokenRes = await fetch('https://zoom.us/oauth/token', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Basic ${basicAuth}`,
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: params.toString()
+                });
+
+                const tokenData = await tokenRes.json();
+
+                if (!tokenRes.ok) {
+                    console.error('Zoom OAuth token exchange failed:', tokenData);
+                    res.writeHead(502, { 'Content-Type': 'text/html' });
+                    res.end(`<p>Zoom rejected the token exchange: ${JSON.stringify(tokenData)}</p>`);
+                    return;
+                }
+
+                // For now, just log it -- storing/using this token for further
+                // API calls is a later step once the basic OAuth flow is proven
+                // to work end to end.
+                console.log('Zoom OAuth success. Scopes granted:', tokenData.scope);
+
+                res.writeHead(200, { 'Content-Type': 'text/html' });
+                res.end('<p>Recovery Translator is authorized. You can close this window and return to Zoom.</p>');
+            } catch (err) {
+                console.error('OAuth callback error:', err.message);
+                res.writeHead(502, { 'Content-Type': 'text/html' });
+                res.end('<p>Something went wrong contacting Zoom.</p>');
+            }
+        })();
+    }
+
     else {
         res.writeHead(404);
         res.end('Not found');
