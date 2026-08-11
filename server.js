@@ -272,11 +272,33 @@ const server = http.createServer((req, res) => {
                 return;
             }
 
-            // Real lifecycle events. Just log for now -- connecting to the
-            // actual RTMS media stream comes next, once this endpoint is
-            // confirmed reachable and verified in the Zoom console.
+            // Real lifecycle events.
             console.log('RTMS webhook event:', payload.event, JSON.stringify(payload.payload || {}));
             res.writeHead(200); res.end('ok');
+
+            // Isolated proof step: just confirm real audio bytes actually
+            // arrive. Not wired to OpenAI yet on purpose -- same pattern we
+            // used for the transcription session months ago, prove the raw
+            // thing works before building anything on top of it.
+            if (payload.event === 'meeting.rtms_started') {
+                try {
+                    const rtms = require('@zoom/rtms').default || require('@zoom/rtms');
+                    const client = new rtms.Client();
+                    let byteCount = 0;
+                    let frameCount = 0;
+                    client.onAudioData((data, timestamp, metadata) => {
+                        byteCount += (data && data.length) || 0;
+                        frameCount += 1;
+                        if (frameCount % 25 === 0) {
+                            console.log(`RTMS audio: ${frameCount} frames, ${byteCount} total bytes so far, from ${metadata && metadata.userName}`);
+                        }
+                    });
+                    client.join(payload.payload);
+                    console.log('RTMS client.join() called -- waiting for audio frames...');
+                } catch (err) {
+                    console.error('RTMS client error:', err.message);
+                }
+            }
         });
     }
 
