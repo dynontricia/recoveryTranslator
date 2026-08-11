@@ -77,6 +77,9 @@ const server = http.createServer((req, res) => {
     else if (pathname === '/transcript' || pathname === '/transcript.html') {
         serveFile(res, './transcript.html', 'text/html; charset=UTF-8');
     }
+    else if (pathname === '/zoom-app' || pathname === '/zoom-app.html') {
+        serveFile(res, './zoom-app.html', 'text/html; charset=UTF-8');
+    }
     else if (pathname === '/logo.png') {
         serveFile(res, './recoveryTrans.png', 'image/png');
     }

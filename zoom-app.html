@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Recovery Translator for Zoom</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            padding: 20px; color: #1a202c; background: #f7fafc;
+        }
+        h1 { font-size: 18px; margin-bottom: 12px; }
+        .status {
+            padding: 12px 14px; border-radius: 8px; font-size: 14px;
+            margin-bottom: 16px; line-height: 1.5;
+        }
+        .status.ok { background: #f0fff4; border: 1px solid #9ae6b4; color: #22543d; }
+        .status.err { background: #fff5f5; border: 1px solid #fc8181; color: #742a2a; }
+        .status.pending { background: #ebf8ff; border: 1px solid #90cdf4; color: #2c5282; }
+        button {
+            width: 100%; padding: 12px; border: none; border-radius: 8px;
+            font-size: 15px; font-weight: 600; cursor: pointer; margin-bottom: 10px;
+        }
+        .btn-start { background: #38a169; color: white; }
+        .btn-stop { background: #e53e3e; color: white; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        pre {
+            background: #1a202c; color: #68d391; font-size: 11px; padding: 10px;
+            border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+        }
+    </style>
+</head>
+<body>
+    <h1>Recovery Translator</h1>
+    <div class="status pending" id="status">Loading...</div>
+    <button class="btn-start" id="start-btn" onclick="doStartRTMS()" disabled>Start captions (RTMS)</button>
+    <button class="btn-stop" id="stop-btn" onclick="doStopRTMS()" disabled>Stop captions</button>
+    <pre id="log"></pre>
+
+<script src="https://appssdk.zoom.us/sdk.js"></script>
+<script>
+    // Note: the SDK defines window.zoomSdk globally -- do not redeclare it
+    // with "let zoomSdk", that throws a redeclaration error.
+    const sdk = window.zoomSdk;
+
+    function setStatus(cls, text) {
+        const el = document.getElementById('status');
+        el.className = 'status ' + cls;
+        el.textContent = text;
+    }
+    function log(msg) {
+        const el = document.getElementById('log');
+        el.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
+    }
+
+    async function init() {
+        try {
+            // The capabilities list here must match the Zoom App SDK APIs
+            // selected in the console (Features > Surface / Zoom App SDK).
+            const configResponse = await sdk.config({
+                capabilities: ['startRTMS', 'stopRTMS'],
+                version: '0.16'
+            });
+            log('sdk.config() succeeded. Running context: ' + configResponse.runningContext);
+            setStatus('ok', 'Connected to Zoom. Ready to start captions.');
+            document.getElementById('start-btn').disabled = false;
+        } catch (error) {
+            log('sdk.config() failed: ' + error.message);
+            setStatus('err', 'Not running inside Zoom (or the app isn\'t authorized yet). ' +
+                'This page is meant to be opened from the Apps button inside a live Zoom meeting.');
+        }
+    }
+
+    async function doStartRTMS() {
+        try {
+            log('Calling sdk.startRTMS()...');
+            const res = await sdk.startRTMS();
+            log('startRTMS response: ' + JSON.stringify(res));
+            setStatus('ok', 'RTMS started -- captions should be processing now.');
+            document.getElementById('start-btn').disabled = true;
+            document.getElementById('stop-btn').disabled = false;
+        } catch (error) {
+            log('startRTMS FAILED: ' + error.message);
+            setStatus('err', 'Could not start RTMS: ' + error.message);
+        }
+    }
+
+    async function doStopRTMS() {
+        try {
+            log('Calling sdk.stopRTMS()...');
+            const res = await sdk.stopRTMS();
+            log('stopRTMS response: ' + JSON.stringify(res));
+            setStatus('ok', 'RTMS stopped.');
+            document.getElementById('start-btn').disabled = false;
+            document.getElementById('stop-btn').disabled = true;
+        } catch (error) {
+            log('stopRTMS FAILED: ' + error.message);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
