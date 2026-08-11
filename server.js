@@ -56,13 +56,31 @@ function broadcastControl(sessionCode, obj) {
     });
 }
 
-function serveFile(res, path, contentType) {
+function serveFile(res, path, contentType, extraHeaders) {
     fs.readFile(path, (err, data) => {
         if (err) { res.writeHead(err.code === 'ENOENT' ? 404 : 500); res.end(); return; }
-        res.writeHead(200, { 'Content-Type': contentType });
+        res.writeHead(200, { 'Content-Type': contentType, ...(extraHeaders || {}) });
         res.end(data);
     });
 }
+
+// Zoom's app review runs an automated OWASP header check specifically on the
+// Home URL. Scoped to that one page rather than applied globally, since the
+// main app (index.html) has WebRTC/OpenAI connections and third-party
+// scripts already working and tested -- a broad CSP change risks breaking
+// that for a fix that's really only about this one page.
+const ZOOM_APP_SECURITY_HEADERS = {
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Content-Security-Policy': [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' https://appssdk.zoom.us",
+        "style-src 'self' 'unsafe-inline'",
+        "connect-src 'self' https://appssdk.zoom.us",
+        "frame-ancestors 'self' https://*.zoom.us https://*.zoomgov.com"
+    ].join('; ')
+};
 
 const server = http.createServer((req, res) => {
     const parsedUrl = new URL(req.url, `http://localhost:${PORT}`);
@@ -78,7 +96,7 @@ const server = http.createServer((req, res) => {
         serveFile(res, './transcript.html', 'text/html; charset=UTF-8');
     }
     else if (pathname === '/zoom-app' || pathname === '/zoom-app.html') {
-        serveFile(res, './zoom-app.html', 'text/html; charset=UTF-8');
+        serveFile(res, './zoom-app.html', 'text/html; charset=UTF-8', ZOOM_APP_SECURITY_HEADERS);
     }
     else if (pathname === '/logo.png') {
         serveFile(res, './recoveryTrans.png', 'image/png');
