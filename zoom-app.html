@@ -80,6 +80,9 @@
             setStatus('ok', 'RTMS started -- captions should be processing now.');
             document.getElementById('start-btn').disabled = true;
             document.getElementById('stop-btn').disabled = false;
+            const newRes = await sdk.getRTMSStatus();
+            log('getRTMSStatus response: ' + JSON.stringify(newRes));
+
         } catch (error) {
             log('startRTMS FAILED: ' + error.message);
             setStatus('err', 'Could not start RTMS: ' + error.message);
