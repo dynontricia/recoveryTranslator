@@ -299,6 +299,7 @@
     <a href="#" onclick="openModal('modal-about')">About</a>
     <a href="#" onclick="openModal('modal-privacy')">Privacy Policy</a>
     <a href="mailto:dynontricia@gmail.com">Contact</a>
+    <span style="width:100%;font-size:12px;color:#a0aec0;margin-top:4px">build: queue+toggle · dual-session</span>
 </footer>
 
 <!-- MODAL: Privacy -->
@@ -557,6 +558,7 @@
     //                           break and return to 'live'
     let transcriptionMode = 'live';
     let transcriptionPauseTimer = null;
+    let awaitingSegmentBoundarySpace = false;
     const TRANSCRIPTION_PAUSE_COMMIT_MS = 2500;
 
     async function startTranscription(code) {
@@ -588,7 +590,16 @@
     function handleTranscriptionEvent(ev) {
         if (ev.type === 'conversation.item.input_audio_transcription.delta') {
             if (transcriptionMode === 'live' || transcriptionMode === 'flushing-for-turn') {
-                writeCaption('caption-box-en', 'english', ev.delta);
+                let delta = ev.delta;
+                // A fresh segment after a pause-triggered commit is treated by
+                // the model as the start of new output, so its first delta has
+                // no reason to carry a leading space -- without this guard it
+                // glues onto whatever text came before the pause.
+                if (awaitingSegmentBoundarySpace && transcriptionMode === 'live') {
+                    delta = ' ' + delta;
+                    awaitingSegmentBoundarySpace = false;
+                }
+                writeCaption('caption-box-en', 'english', delta);
             }
             // 'held' and 'flushing-for-resume': swallow silently
 
@@ -602,7 +613,10 @@
             if (transcriptionMode === 'live') {
                 if (transcriptionPauseTimer) clearTimeout(transcriptionPauseTimer);
                 transcriptionPauseTimer = setTimeout(() => {
-                    if (transcriptionMode === 'live') commitTranscription();
+                    if (transcriptionMode === 'live') {
+                        commitTranscription();
+                        awaitingSegmentBoundarySpace = true;
+                    }
                 }, TRANSCRIPTION_PAUSE_COMMIT_MS);
             }
         }
@@ -772,6 +786,7 @@
         if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
         spanishTurn = false;
         transcriptionMode = 'live';
+        awaitingSegmentBoundarySpace = false;
         if (transcriptionPauseTimer) { clearTimeout(transcriptionPauseTimer); transcriptionPauseTimer = null; }
     }
 
