@@ -17,6 +17,10 @@ const PORT = 3000;
 // }
 const sessions = {};
 
+// Active RTMS clients, keyed by rtms_stream_id -- lets meeting.rtms_stopped
+// find and cleanly close the right client, per Zoom's own SDK example.
+const rtmsClients = new Map();
+
 function createSession(apiKey, micDistance, mode) {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     sessions[code] = {
@@ -297,6 +301,24 @@ const server = http.createServer((req, res) => {
             console.log('RTMS webhook event:', payload.event, JSON.stringify(payload.payload || {}));
             res.writeHead(200); res.end('ok');
 
+            const streamId = payload.payload && payload.payload.rtms_stream_id;
+
+            if (payload.event === 'meeting.rtms_stopped') {
+                if (!streamId) {
+                    console.log('meeting.rtms_stopped received without a stream ID');
+                    return;
+                }
+                const client = rtmsClients.get(streamId);
+                if (!client) {
+                    console.log('meeting.rtms_stopped for unknown stream ID:', streamId);
+                    return;
+                }
+                client.leave();
+                rtmsClients.delete(streamId);
+                console.log('RTMS client left cleanly for stream', streamId);
+                return;
+            }
+
             // Isolated proof step: just confirm real audio bytes actually
             // arrive. Not wired to OpenAI yet on purpose -- same pattern we
             // used for the transcription session months ago, prove the raw
@@ -305,10 +327,14 @@ const server = http.createServer((req, res) => {
                 try {
                     const rtms = require('@zoom/rtms').default || require('@zoom/rtms');
                     const client = new rtms.Client();
+                    if (streamId) rtmsClients.set(streamId, client);
                     let byteCount = 0;
                     let frameCount = 0;
-                    client.onAudioData((data, timestamp, metadata) => {
-                        byteCount += (data && data.length) || 0;
+                    // Real signature per Zoom's own SDK docs: (data, size, timestamp, metadata).
+                    // We previously had (data, timestamp, metadata) -- every field was
+                    // shifted one position off from what we thought it was.
+                    client.onAudioData((data, size, timestamp, metadata) => {
+                        byteCount += size || (data && data.length) || 0;
                         frameCount += 1;
                         if (frameCount % 25 === 0) {
                             console.log(`RTMS audio: ${frameCount} frames, ${byteCount} total bytes so far, from ${metadata && metadata.userName}`);
