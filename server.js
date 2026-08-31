@@ -563,7 +563,17 @@ const server = http.createServer((req, res) => {
                         try {
                             const resampled = resamplePCM16(Buffer.from(data), 16000, 24000);
                             const b64 = resampled.toString('base64');
-                            const appendMsg = JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 });
+                            // Confirmed by a live error from OpenAI: the
+                            // /realtime/translations endpoint uses different
+                            // client event names than the plain /realtime
+                            // endpoint -- 'session.input_audio_buffer.append',
+                            // not 'input_audio_buffer.append'. Only 3 event
+                            // types are valid there at all (session.update,
+                            // session.input_audio_buffer.append, session.close)
+                            // -- no commit, confirming translate sessions
+                            // segment speech internally via built-in VAD.
+                            const translateAppendMsg = JSON.stringify({ type: 'session.input_audio_buffer.append', audio: b64 });
+                            const transcriptionAppendMsg = JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 });
 
                             // Baseline (Spanish) always gets audio, same as the
                             // browser architecture -- suppressed at the
@@ -572,15 +582,15 @@ const server = http.createServer((req, res) => {
                             // since OpenAI still needs continuous audio to
                             // avoid the session going stale.
                             if (pipeline.baselineWs && pipeline.baselineWs.readyState === WebSocket.OPEN) {
-                                pipeline.baselineWs.send(appendMsg);
+                                pipeline.baselineWs.send(translateAppendMsg);
                             }
 
                             if (pipeline.spanishTurn) {
                                 if (pipeline.turnWs && pipeline.turnWs.readyState === WebSocket.OPEN) {
-                                    pipeline.turnWs.send(appendMsg);
+                                    pipeline.turnWs.send(translateAppendMsg);
                                 }
                             } else if (pipeline.transcriptionWs && pipeline.transcriptionWs.readyState === WebSocket.OPEN) {
-                                pipeline.transcriptionWs.send(appendMsg);
+                                pipeline.transcriptionWs.send(transcriptionAppendMsg);
                                 // Same pause-triggered commit design already
                                 // proven out in the browser pipeline: bound the
                                 // buffer by committing only after a real pause,
