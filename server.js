@@ -50,6 +50,21 @@ let lastRtmsSessionCode = null;
 // interpolation resampler is enough -- no need for a heavier audio library
 // or another native dependency (we've had enough native-package risk
 // tonight with @zoom/rtms already).
+// RTMS's own documentation describes its wire format as "base64-encoded
+// binary packets" -- but it was never confirmed whether the @zoom/rtms
+// package's onAudioData callback hands us that base64 text directly or
+// already-decoded binary. Buffer.from(data) with no encoding treats a
+// string as UTF-8 text, silently corrupting it if it's actually base64 --
+// a very plausible explanation for garbled captions and an eventual
+// server-side error from feeding OpenAI corrupted audio. Handle both cases
+// correctly rather than assume either.
+function toAudioBuffer(data) {
+    if (typeof data === 'string') {
+        return Buffer.from(data, 'base64');
+    }
+    return Buffer.from(data);
+}
+
 function resamplePCM16(inputBuffer, inputRate, outputRate) {
     const inSamples = inputBuffer.length / 2;
     const ratio = outputRate / inputRate;
@@ -116,6 +131,7 @@ function connectTranscriptionWs(pipeline) {
 
     ws.on('message', (raw) => {
         let ev; try { ev = JSON.parse(raw.toString()); } catch (e) { return; }
+        pipeline.transcriptionEventCount = (pipeline.transcriptionEventCount || 0) + 1;
 
         if (ev.type === 'session.updated') {
             console.log(`RTMS/OpenAI [${pipeline.sessionCode}] transcription: session.updated confirmed -- live`);
@@ -127,7 +143,16 @@ function connectTranscriptionWs(pipeline) {
         if (ev.type === 'conversation.item.input_audio_transcription.delta') {
             let delta = ev.delta;
             if (pipeline.awaitingSegmentSpace) { delta = ' ' + delta; pipeline.awaitingSegmentSpace = false; }
+            console.log(`RTMS/OpenAI [${pipeline.sessionCode}] transcription: DELTA "${delta}"`);
             broadcast(pipeline.sessionCode, 'english', delta);
+        }
+        // Catch-all: log any event type we don't already have a specific
+        // handler for, at most once every 20 events, so we can see what
+        // OpenAI is actually sending instead of guessing blind.
+        if (!['session.updated', 'error', 'conversation.item.input_audio_transcription.delta'].includes(ev.type)) {
+            if (pipeline.transcriptionEventCount % 20 === 1) {
+                console.log(`RTMS/OpenAI [${pipeline.sessionCode}] transcription: other event type seen: ${ev.type}`);
+            }
         }
     });
 
@@ -153,6 +178,7 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
 
     ws.on('message', (raw) => {
         let ev; try { ev = JSON.parse(raw.toString()); } catch (e) { return; }
+        pipeline[wsKey + 'EventCount'] = (pipeline[wsKey + 'EventCount'] || 0) + 1;
 
         if (ev.type === 'session.updated') {
             console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): session.updated confirmed -- live`);
@@ -162,6 +188,7 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
             console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): ERROR:`, JSON.stringify(ev.error || ev));
         }
         if (ev.type === 'session.output_transcript.delta') {
+            console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): DELTA "${ev.delta}"`);
             // Baseline (Spanish) audio keeps flowing continuously even during
             // a turn -- OpenAI's guidance is to keep appending audio without
             // gaps -- but its captions are suppressed at broadcast time while
@@ -169,6 +196,11 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
             // and avoiding same-language "cleanup" text leaking through.
             if (broadcastLanguage === 'spanish' && pipeline.spanishTurn) return;
             broadcast(pipeline.sessionCode, broadcastLanguage, ev.delta);
+        }
+        if (!['session.updated', 'error', 'session.output_transcript.delta'].includes(ev.type)) {
+            if (pipeline[wsKey + 'EventCount'] % 20 === 1) {
+                console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): other event type seen: ${ev.type}`);
+            }
         }
     });
 
@@ -598,9 +630,19 @@ const server = http.createServer((req, res) => {
                     connectTranscriptionWs(pipeline);
                     connectTranslateWs(pipeline, 'es', 'baselineWs', 'baselineReady', 'spanish');
 
+                    let audioFrameCount = 0;
                     client.onAudioData((data, size, timestamp, metadata) => {
                         try {
-                            const resampled = resamplePCM16(Buffer.from(data), 16000, 24000);
+                            audioFrameCount++;
+                            // We've never actually confirmed what shape RTMS
+                            // hands us here -- log it once so we can see
+                            // whether Buffer.from(data) is even doing the
+                            // right thing, instead of assuming.
+                            if (audioFrameCount === 1) {
+                                console.log(`RTMS [${pipeline.sessionCode}]: first audio frame -- typeof data=${typeof data}, constructor=${data && data.constructor && data.constructor.name}, byteLength=${data && data.byteLength}, size param=${size}, ${typeof data === 'string' ? 'DECODING AS BASE64' : 'using as raw binary'}`);
+                            }
+
+                            const resampled = resamplePCM16(toAudioBuffer(data), 16000, 24000);
                             const b64 = resampled.toString('base64');
                             // Confirmed by a live error from OpenAI: the
                             // /realtime/translations endpoint uses different
@@ -613,6 +655,10 @@ const server = http.createServer((req, res) => {
                             // segment speech internally via built-in VAD.
                             const translateAppendMsg = JSON.stringify({ type: 'session.input_audio_buffer.append', audio: b64 });
                             const transcriptionAppendMsg = JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 });
+
+                            if (audioFrameCount % 100 === 1) {
+                                console.log(`RTMS [${pipeline.sessionCode}]: frame ${audioFrameCount}, resampled ${resampled.length} bytes, baselineWs=${pipeline.baselineWs && pipeline.baselineWs.readyState}, transcriptionWs=${pipeline.transcriptionWs && pipeline.transcriptionWs.readyState}`);
+                            }
 
                             // Baseline (Spanish) always gets audio, same as the
                             // browser architecture -- suppressed at the
