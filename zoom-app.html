@@ -24,6 +24,8 @@
         }
         .btn-start { background: #38a169; color: white; }
         .btn-stop { background: #e53e3e; color: white; }
+        .btn-turn { background: #4f46e5; color: white; }
+        .btn-turn.active { background: #d97706; }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
         pre {
             background: #1a202c; color: #68d391; font-size: 11px; padding: 10px;
@@ -32,17 +34,23 @@
     </style>
 </head>
 <body>
-    <h1>Recovery Translator</h1>
-    <div class="status pending" id="status">Loading...</div>
-    <button class="btn-start" id="start-btn" onclick="doStartRTMS()" disabled>Start captions (RTMS)</button>
-    <button class="btn-stop" id="stop-btn" onclick="doStopRTMS()" disabled>Stop captions</button>
-    <pre id="log"></pre>
+<h1>Recovery Translator</h1>
+<div class="status pending" id="status">Loading...</div>
+<button class="btn-start" id="start-btn" onclick="doStartRTMS()" disabled>Start captions (RTMS)</button>
+<button class="btn-stop" id="stop-btn" onclick="doStopRTMS()" disabled>Stop captions</button>
+
+<div class="status ok" id="session-info" style="display:none"></div>
+<button class="btn-turn" id="turn-btn" onclick="toggleSpanishTurn()" style="display:none">🎤 Spanish speaker (switch)</button>
+
+<pre id="log"></pre>
 
 <script src="https://appssdk.zoom.us/sdk.js"></script>
 <script>
     // Note: the SDK defines window.zoomSdk globally -- do not redeclare it
     // with "let zoomSdk", that throws a redeclaration error.
     const sdk = window.zoomSdk;
+    let currentSessionCode = null;
+    let spanishTurnActive = false;
 
     function setStatus(cls, text) {
         const el = document.getElementById('status');
@@ -77,15 +85,64 @@
             log('Calling sdk.startRTMS()...');
             const res = await sdk.startRTMS();
             log('startRTMS response: ' + JSON.stringify(res));
-            setStatus('ok', 'RTMS started -- captions should be processing now.');
+            setStatus('ok', 'RTMS started -- looking up your caption session...');
             document.getElementById('start-btn').disabled = true;
             document.getElementById('stop-btn').disabled = false;
-            const newRes = await sdk.getRTMSStatus();
-            log('getRTMSStatus response: ' + JSON.stringify(newRes));
-
+            findSessionCode();
         } catch (error) {
             log('startRTMS FAILED: ' + error.message);
             setStatus('err', 'Could not start RTMS: ' + error.message);
+        }
+    }
+
+    // The startRTMS() response doesn't include a session code -- our server
+    // creates one the moment the meeting.rtms_started webhook lands, which
+    // happens moments after this call succeeds. Poll briefly for it.
+    async function findSessionCode(attempt) {
+        attempt = attempt || 0;
+        try {
+            const res = await fetch('/zoom/latest-session');
+            const data = await res.json();
+            if (data.sessionCode) {
+                currentSessionCode = data.sessionCode;
+                const link = `${location.origin}/display?session=${currentSessionCode}`;
+                const info = document.getElementById('session-info');
+                info.style.display = '';
+                info.innerHTML = `Captions live. <a href="${link}" target="_blank">${link}</a>`;
+                document.getElementById('turn-btn').style.display = '';
+                log('Found caption session: ' + currentSessionCode);
+                return;
+            }
+        } catch (error) {
+            log('Session lookup failed: ' + error.message);
+        }
+        if (attempt < 10) {
+            setTimeout(() => findSessionCode(attempt + 1), 500);
+        } else {
+            log('Gave up looking for a caption session after 5 seconds.');
+        }
+    }
+
+    async function toggleSpanishTurn() {
+        if (!currentSessionCode) return;
+        const btn = document.getElementById('turn-btn');
+        const nextActive = !spanishTurnActive;
+        btn.disabled = true;
+        try {
+            const res = await fetch('/zoom/spanish-turn', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionCode: currentSessionCode, active: nextActive })
+            });
+            const data = await res.json();
+            spanishTurnActive = data.spanishTurn;
+            btn.textContent = spanishTurnActive ? '◀ Return to English' : '🎤 Spanish speaker (switch)';
+            btn.classList.toggle('active', spanishTurnActive);
+            log('Spanish turn is now: ' + spanishTurnActive);
+        } catch (error) {
+            log('Spanish turn toggle failed: ' + error.message);
+        } finally {
+            btn.disabled = false;
         }
     }
 
@@ -97,6 +154,9 @@
             setStatus('ok', 'RTMS stopped.');
             document.getElementById('start-btn').disabled = false;
             document.getElementById('stop-btn').disabled = true;
+            document.getElementById('session-info').style.display = 'none';
+            document.getElementById('turn-btn').style.display = 'none';
+            currentSessionCode = null;
         } catch (error) {
             log('stopRTMS FAILED: ' + error.message);
         }
