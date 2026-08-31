@@ -21,6 +21,105 @@ const sessions = {};
 // find and cleanly close the right client, per Zoom's own SDK example.
 const rtmsClients = new Map();
 
+// Per-stream caption pipeline state: { sessionCode, openaiWs, pauseTimer,
+// mode, awaitingSegmentSpace }. Keyed by the same rtms_stream_id as
+// rtmsClients, so a stream's whole pipeline (Zoom audio in, OpenAI
+// transcription, caption broadcast) can be torn down together on stop.
+const rtmsCaptionPipelines = new Map();
+
+// RTMS's default audio is 16kHz mono PCM16, but OpenAI's realtime API
+// requires 24kHz. 16000->24000 is a clean 2:3 ratio, so a simple linear
+// interpolation resampler is enough -- no need for a heavier audio library
+// or another native dependency (we've had enough native-package risk
+// tonight with @zoom/rtms already).
+function resamplePCM16(inputBuffer, inputRate, outputRate) {
+    const inSamples = inputBuffer.length / 2;
+    const ratio = outputRate / inputRate;
+    const outSamples = Math.floor(inSamples * ratio);
+    const output = Buffer.alloc(outSamples * 2);
+
+    for (let i = 0; i < outSamples; i++) {
+        const srcPos = i / ratio;
+        const srcIndexLow = Math.floor(srcPos);
+        const srcIndexHigh = Math.min(srcIndexLow + 1, inSamples - 1);
+        const frac = srcPos - srcIndexLow;
+
+        const sampleLow = inputBuffer.readInt16LE(srcIndexLow * 2);
+        const sampleHigh = inputBuffer.readInt16LE(srcIndexHigh * 2);
+        const interpolated = Math.round(sampleLow + (sampleHigh - sampleLow) * frac);
+
+        output.writeInt16LE(Math.max(-32768, Math.min(32767, interpolated)), i * 2);
+    }
+    return output;
+}
+
+// Opens a server-side WebSocket to OpenAI's realtime API and configures it
+// as an English transcription session -- the server-side equivalent of the
+// browser's WebRTC transcription session, same model/settings (gpt-realtime-
+// whisper, delay: high, no VAD -- manual commit only), same pause-triggered
+// commit design. Logs each stage clearly since this connection pattern
+// (standard realtime endpoint + session.update to type:"transcription")
+// hasn't been verified against a live response yet -- these logs are how
+// we'll know definitively whether it's right.
+function connectOpenAITranscription(pipeline) {
+    const apiKey = sessions[pipeline.sessionCode].apiKey;
+    const ws = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1', {
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'OpenAI-Safety-Identifier': 'recovery-translator'
+        }
+    });
+    pipeline.openaiWs = ws;
+
+    ws.on('open', () => {
+        console.log(`RTMS/OpenAI [${pipeline.sessionCode}]: WebSocket connected, sending session.update`);
+        ws.send(JSON.stringify({
+            type: 'session.update',
+            session: {
+                type: 'transcription',
+                audio: {
+                    input: {
+                        format: { type: 'audio/pcm', rate: 24000 },
+                        transcription: { model: 'gpt-realtime-whisper', language: 'en', delay: 'high' },
+                        turn_detection: null
+                    }
+                }
+            }
+        }));
+    });
+
+    ws.on('message', (raw) => {
+        let ev;
+        try { ev = JSON.parse(raw.toString()); } catch (e) { return; }
+
+        if (ev.type === 'session.updated') {
+            console.log(`RTMS/OpenAI [${pipeline.sessionCode}]: session.updated confirmed -- pipeline is live`);
+            pipeline.mode = 'live';
+        }
+
+        if (ev.type === 'error') {
+            console.error(`RTMS/OpenAI [${pipeline.sessionCode}]: ERROR from OpenAI:`, JSON.stringify(ev.error || ev));
+        }
+
+        if (ev.type === 'conversation.item.input_audio_transcription.delta') {
+            let delta = ev.delta;
+            if (pipeline.awaitingSegmentSpace) {
+                delta = ' ' + delta;
+                pipeline.awaitingSegmentSpace = false;
+            }
+            broadcast(pipeline.sessionCode, 'english', delta);
+        }
+    });
+
+    ws.on('error', (err) => {
+        console.error(`RTMS/OpenAI [${pipeline.sessionCode}]: WebSocket error:`, err.message);
+    });
+
+    ws.on('close', (code, reason) => {
+        console.log(`RTMS/OpenAI [${pipeline.sessionCode}]: WebSocket closed. code=${code} reason=${reason}`);
+    });
+}
+
 function createSession(apiKey, micDistance, mode) {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     sessions[code] = {
@@ -309,37 +408,68 @@ const server = http.createServer((req, res) => {
                     return;
                 }
                 const client = rtmsClients.get(streamId);
-                if (!client) {
-                    console.log('meeting.rtms_stopped for unknown stream ID:', streamId);
-                    return;
+                if (client) { client.leave(); rtmsClients.delete(streamId); }
+
+                const pipeline = rtmsCaptionPipelines.get(streamId);
+                if (pipeline) {
+                    if (pipeline.pauseTimer) clearTimeout(pipeline.pauseTimer);
+                    if (pipeline.openaiWs) pipeline.openaiWs.close();
+                    rtmsCaptionPipelines.delete(streamId);
                 }
-                client.leave();
-                rtmsClients.delete(streamId);
-                console.log('RTMS client left cleanly for stream', streamId);
+                console.log('RTMS client and caption pipeline stopped for stream', streamId);
                 return;
             }
 
-            // Isolated proof step: just confirm real audio bytes actually
-            // arrive. Not wired to OpenAI yet on purpose -- same pattern we
-            // used for the transcription session months ago, prove the raw
-            // thing works before building anything on top of it.
             if (payload.event === 'meeting.rtms_started') {
                 try {
                     const rtms = require('@zoom/rtms').default || require('@zoom/rtms');
                     const client = new rtms.Client();
                     if (streamId) rtmsClients.set(streamId, client);
-                    let byteCount = 0;
-                    let frameCount = 0;
-                    // Real signature per Zoom's own SDK docs: (data, size, timestamp, metadata).
-                    // We previously had (data, timestamp, metadata) -- every field was
-                    // shifted one position off from what we thought it was.
+
+                    // Auto-create a caption session for this Zoom meeting, same
+                    // way the leader onboarding flow does, so we get the exact
+                    // same display/transcript/SSE infrastructure for free.
+                    // English-only for this first pass (mirrors how we proved
+                    // out the browser transcription session originally).
+                    const sessionCode = createSession(process.env.OPENAI_API_KEY, 'far_field', 'transcript_only');
+                    console.log(`RTMS: created caption session ${sessionCode} for stream ${streamId}`);
+                    console.log(`RTMS: view captions at /transcript?session=${sessionCode}&lang=english`);
+
+                    const pipeline = {
+                        sessionCode,
+                        openaiWs: null,
+                        pauseTimer: null,
+                        mode: 'connecting',
+                        awaitingSegmentSpace: false
+                    };
+                    rtmsCaptionPipelines.set(streamId, pipeline);
+
+                    connectOpenAITranscription(pipeline);
+
                     client.onAudioData((data, size, timestamp, metadata) => {
-                        byteCount += size || (data && data.length) || 0;
-                        frameCount += 1;
-                        if (frameCount % 25 === 0) {
-                            console.log(`RTMS audio: ${frameCount} frames, ${byteCount} total bytes so far, from ${metadata && metadata.userName}`);
+                        if (pipeline.mode !== 'live' || !pipeline.openaiWs || pipeline.openaiWs.readyState !== WebSocket.OPEN) return;
+                        try {
+                            const resampled = resamplePCM16(Buffer.from(data), 16000, 24000);
+                            pipeline.openaiWs.send(JSON.stringify({
+                                type: 'input_audio_buffer.append',
+                                audio: resampled.toString('base64')
+                            }));
+                            // Same pause-triggered commit design already proven
+                            // out in the browser pipeline: bound the buffer by
+                            // committing only after a real pause, never on a
+                            // fixed timer (that caused mid-word chopping there).
+                            if (pipeline.pauseTimer) clearTimeout(pipeline.pauseTimer);
+                            pipeline.pauseTimer = setTimeout(() => {
+                                if (pipeline.mode === 'live' && pipeline.openaiWs && pipeline.openaiWs.readyState === WebSocket.OPEN) {
+                                    pipeline.openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+                                    pipeline.awaitingSegmentSpace = true;
+                                }
+                            }, 2500);
+                        } catch (err) {
+                            console.error('RTMS audio processing error:', err.message);
                         }
                     });
+
                     client.join(payload.payload);
                     console.log('RTMS client.join() called -- waiting for audio frames...');
                 } catch (err) {
