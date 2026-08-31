@@ -4,6 +4,18 @@ const fs = require('fs');
 const crypto = require('crypto');
 const WebSocket = require('ws');
 
+// Safety net: an uncaught error anywhere -- especially from the native
+// @zoom/rtms package, which we don't fully control -- would otherwise crash
+// this entire process by Node's default behavior, wiping every in-memory
+// session (including completely unrelated browser sessions that have
+// nothing to do with Zoom). Log and keep running instead.
+process.on('uncaughtException', (err) => {
+    console.error('UNCAUGHT EXCEPTION (server kept running):', err && err.stack || err);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('UNHANDLED REJECTION (server kept running):', reason);
+});
+
 const PORT = 3000;
 
 // sessions[code] = {
@@ -73,7 +85,13 @@ function resamplePCM16(inputBuffer, inputRate, outputRate) {
 // NOT in a Spanish turn -- see the onAudioData routing below.
 function connectTranscriptionWs(pipeline) {
     const apiKey = sessions[pipeline.sessionCode].apiKey;
-    const ws = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1', {
+    // Confirmed by a live error from OpenAI: a session's type must be set at
+    // connection time via ?intent=transcription, not switched afterward with
+    // session.update on a connection opened as a general realtime session
+    // ("Passing a transcription session update to a realtime session is not
+    // allowed"). This matches the older, precedented connection pattern
+    // rather than the "connect generic, then convert" approach that failed.
+    const ws = new WebSocket('wss://api.openai.com/v1/realtime?intent=transcription', {
         headers: { 'Authorization': `Bearer ${apiKey}`, 'OpenAI-Safety-Identifier': 'recovery-translator' }
     });
     pipeline.transcriptionWs = ws;
@@ -535,6 +553,19 @@ const server = http.createServer((req, res) => {
                     const rtms = require('@zoom/rtms').default || require('@zoom/rtms');
                     const client = new rtms.Client();
                     if (streamId) rtmsClients.set(streamId, client);
+
+                    // If the native client is an EventEmitter and ever emits
+                    // 'error' with no listener attached, Node's default
+                    // behavior is to crash the ENTIRE process -- which would
+                    // wipe every unrelated in-memory session, not just this
+                    // one. Attach a handler defensively even though the
+                    // exact event surface of this native package isn't
+                    // fully documented.
+                    if (typeof client.on === 'function') {
+                        client.on('error', (err) => {
+                            console.error(`RTMS client error event for stream ${streamId}:`, err && err.message || err);
+                        });
+                    }
 
                     // Auto-create a bilingual caption session for this Zoom
                     // meeting, same way the leader onboarding flow does, so we
