@@ -274,6 +274,14 @@ const ZOOM_APP_SECURITY_HEADERS = {
     ].join('; ')
 };
 
+// The native @zoom/rtms package appears to write its own internal debug
+// logs to /app/logs/node_<id> and repeatedly fails when that directory
+// doesn't exist in this container. Create it defensively -- harmless if
+// unused, cheap to rule out as a source of noise (or worse) later.
+try { fs.mkdirSync('/app/logs', { recursive: true }); } catch (e) {
+    console.error('Could not create /app/logs (non-fatal):', e.message);
+}
+
 const server = http.createServer((req, res) => {
     const parsedUrl = new URL(req.url, `http://localhost:${PORT}`);
     const pathname = parsedUrl.pathname;
