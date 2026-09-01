@@ -694,6 +694,28 @@ const server = http.createServer((req, res) => {
                         }
                     });
 
+                    // Confirmed by a Zoom-filed bug report (zoom/rtms#92):
+                    // the SDK's DEFAULT audio format is compressed Opus at
+                    // 48kHz stereo -- not the simple L16/16kHz/mono raw PCM
+                    // the raw WebSocket protocol defaults to. Without this,
+                    // we were resampling compressed audio as if it were raw
+                    // PCM samples, producing garbage. Explicitly request the
+                    // format our pipeline is actually built for.
+                    if (typeof client.setAudioParams === 'function') {
+                        client.setAudioParams({
+                            contentType: rtms.AudioContentType.RAW_AUDIO,
+                            codec: rtms.AudioCodec.L16,
+                            sampleRate: rtms.AudioSampleRate.SR_16K,
+                            channel: rtms.AudioChannel.MONO,
+                            dataOpt: rtms.AudioDataOption.AUDIO_MIXED_STREAM,
+                            duration: 20,
+                            frameSize: 320 // samples per 20ms frame at 16kHz mono -- yields 640-byte buffers
+                        });
+                        console.log(`RTMS [${sessionCode}]: requested raw L16 16kHz mono audio explicitly`);
+                    } else {
+                        console.error(`RTMS [${sessionCode}]: client.setAudioParams is not a function on this SDK version -- audio format may default to compressed Opus and produce garbage.`);
+                    }
+
                     client.join(payload.payload);
                     console.log('RTMS client.join() called -- waiting for audio frames...');
                 } catch (err) {
