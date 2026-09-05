@@ -58,6 +58,47 @@ let lastRtmsSessionCode = null;
 // a very plausible explanation for garbled captions and an eventual
 // server-side error from feeding OpenAI corrupted audio. Handle both cases
 // correctly rather than assume either.
+// Posts caption text into Zoom's own native caption bar via the host's
+// third-party captioning URL ("Copy the API token" in the meeting's caption
+// menu, or fetched via GET /meetings/{id}/token).
+//
+// Protocol per Zoom's docs: append &seq=N&lang=xx-XX to the URL, send the
+// caption text as a RAW text/plain body (explicitly NOT form-encoded), and
+// keep seq incrementing continuously across the whole meeting. Zoom
+// recommends retrying with randomized exponential backoff, giving up after
+// roughly 5 seconds so we move on to the next caption rather than block.
+async function postZoomCaption(pipeline, text, lang) {
+    if (!pipeline.zoomCaptionUrl || !text || !text.trim()) return;
+
+    const seq = pipeline.captionSeq++;
+    const sep = pipeline.zoomCaptionUrl.includes('?') ? '&' : '?';
+    const url = `${pipeline.zoomCaptionUrl}${sep}seq=${seq}&lang=${lang}`;
+
+    let delayMs = 100;
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 5000) {
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+                body: text
+            });
+            if (res.ok) return;
+            // Non-OK: fall through to the retry/backoff below.
+            if (seq % 25 === 0) {
+                console.log(`Zoom caption POST non-OK (seq ${seq}): HTTP ${res.status}`);
+            }
+        } catch (err) {
+            if (seq % 25 === 0) {
+                console.error(`Zoom caption POST error (seq ${seq}):`, err.message);
+            }
+        }
+        await new Promise(r => setTimeout(r, Math.random() * delayMs));
+        delayMs = Math.min(delayMs * 2, 1600);
+    }
+    console.error(`Zoom caption POST gave up after ~5s (seq ${seq})`);
+}
+
 function toAudioBuffer(data) {
     if (typeof data === 'string') {
         return Buffer.from(data, 'base64');
@@ -145,6 +186,7 @@ function connectTranscriptionWs(pipeline) {
             if (pipeline.awaitingSegmentSpace) { delta = ' ' + delta; pipeline.awaitingSegmentSpace = false; }
             console.log(`RTMS/OpenAI [${pipeline.sessionCode}] transcription: DELTA "${delta}"`);
             broadcast(pipeline.sessionCode, 'english', delta);
+            postZoomCaption(pipeline, delta, 'en-US');
         }
         // Catch-all: log any event type we don't already have a specific
         // handler for, at most once every 20 events, so we can see what
@@ -196,6 +238,7 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
             // and avoiding same-language "cleanup" text leaking through.
             if (broadcastLanguage === 'spanish' && pipeline.spanishTurn) return;
             broadcast(pipeline.sessionCode, broadcastLanguage, ev.delta);
+            postZoomCaption(pipeline, ev.delta, broadcastLanguage === 'spanish' ? 'es-ES' : 'en-US');
         }
         if (!['session.updated', 'error', 'session.output_transcript.delta'].includes(ev.type)) {
             if (pipeline[wsKey + 'EventCount'] % 20 === 1) {
@@ -509,7 +552,42 @@ const server = http.createServer((req, res) => {
         // Toggle for "a Spanish speaker has the floor," called from the Zoom
         // App panel -- same underlying begin/endSpanishTurn as the browser
         // leader flow, just driven by sessionCode instead of a button on the
-    // leader screen.
+        // leader screen.
+        // Receives the host's Zoom closed-caption token URL ("Copy the API token"
+        // from the meeting's caption menu), enabling captions to appear in Zoom's
+    // own native caption bar rather than only on our display page.
+    else if (req.method === 'POST' && pathname === '/zoom/caption-url') {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', () => {
+            let parsed;
+            try { parsed = JSON.parse(body); } catch (e) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Invalid JSON' }));
+                return;
+            }
+            const { sessionCode, captionUrl } = parsed;
+            let pipeline = null;
+            for (const p of rtmsCaptionPipelines.values()) {
+                if (p.sessionCode === sessionCode) { pipeline = p; break; }
+            }
+            if (!pipeline) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'No active RTMS pipeline for that session code' }));
+                return;
+            }
+            if (!captionUrl || !/^https:\/\/[^\s]+$/i.test(captionUrl)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'captionUrl must be a valid https URL' }));
+                return;
+            }
+            pipeline.zoomCaptionUrl = captionUrl;
+            console.log(`RTMS [${sessionCode}]: Zoom caption URL set -- captions will now also post to Zoom's native caption bar`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+        });
+    }
+
     else if (req.method === 'POST' && pathname === '/zoom/spanish-turn') {
         let body = '';
         req.on('data', chunk => { body += chunk.toString(); });
@@ -623,7 +701,9 @@ const server = http.createServer((req, res) => {
                         turnWs: null, turnReady: false,
                         spanishTurn: false,
                         pauseTimer: null,
-                        awaitingSegmentSpace: false
+                        awaitingSegmentSpace: false,
+                        zoomCaptionUrl: null,
+                        captionSeq: 1
                     };
                     rtmsCaptionPipelines.set(streamId, pipeline);
 

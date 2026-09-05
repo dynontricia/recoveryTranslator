@@ -40,6 +40,18 @@
 <button class="btn-stop" id="stop-btn" onclick="doStopRTMS()" disabled>Stop captions</button>
 
 <div class="status ok" id="session-info" style="display:none"></div>
+
+<div id="caption-url-box" style="display:none">
+    <p style="font-size:13px;color:#4a5568;line-height:1.5;margin-bottom:8px">
+        To show captions in Zoom's own caption bar: in the meeting toolbar open the
+        <strong>Captions</strong> menu → <strong>Set up manual captioner</strong> →
+        <strong>Copy the API token</strong>, then paste it here.
+    </p>
+    <input type="text" id="caption-url-input" placeholder="https://wmcapi.zoom.us/closedcaption?..."
+           style="width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:8px;font-size:13px;margin-bottom:8px"/>
+    <button class="btn-turn" onclick="saveCaptionUrl()">Send captions to Zoom</button>
+</div>
+
 <button class="btn-turn" id="turn-btn" onclick="toggleSpanishTurn()" style="display:none">🎤 Spanish speaker (switch)</button>
 
 <pre id="log"></pre>
@@ -110,7 +122,9 @@
                 info.style.display = '';
                 info.innerHTML = `Captions live. <a href="${link}" target="_blank">${link}</a>`;
                 document.getElementById('turn-btn').style.display = '';
+                document.getElementById('caption-url-box').style.display = '';
                 log('Found caption session: ' + currentSessionCode);
+                setStatus('ok', 'Captions are live for session ' + currentSessionCode + '.');
                 return;
             }
         } catch (error) {
@@ -120,6 +134,33 @@
             setTimeout(() => findSessionCode(attempt + 1), 500);
         } else {
             log('Gave up looking for a caption session after 5 seconds.');
+            setStatus('err', 'RTMS started, but no caption session showed up on our server within 5 seconds. ' +
+                'Check the Railway logs for "RTMS: created bilingual caption session" -- if it never appears, ' +
+                'the meeting.rtms_started webhook likely never fired.');
+        }
+    }
+
+    async function saveCaptionUrl() {
+        if (!currentSessionCode) return;
+        const input = document.getElementById('caption-url-input');
+        const captionUrl = input.value.trim();
+        if (!captionUrl) { log('Paste the Zoom caption API token first.'); return; }
+        try {
+            const res = await fetch('/zoom/caption-url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionCode: currentSessionCode, captionUrl })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                log('Zoom caption URL saved -- captions will now appear in Zoom too.');
+                setStatus('ok', 'Captions are now posting to Zoom\'s caption bar.');
+                document.getElementById('caption-url-box').style.display = 'none';
+            } else {
+                log('Could not save caption URL: ' + (data.error || res.status));
+            }
+        } catch (error) {
+            log('Caption URL save failed: ' + error.message);
         }
     }
 
