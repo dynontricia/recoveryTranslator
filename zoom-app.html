@@ -158,6 +158,13 @@
                 document.getElementById('caption-url-box').style.display = 'none';
             } else {
                 log('Could not save caption URL: ' + (data.error || res.status));
+                setStatus('err', data.error || ('Server returned ' + res.status));
+                // The session code we hold may be stale (RTMS restarted).
+                // Re-look it up so a retry has a chance of succeeding.
+                if (res.status === 404) {
+                    log('Re-checking for a current caption session...');
+                    findSessionCode();
+                }
             }
         } catch (error) {
             log('Caption URL save failed: ' + error.message);

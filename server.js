@@ -572,8 +572,14 @@ const server = http.createServer((req, res) => {
                 if (p.sessionCode === sessionCode) { pipeline = p; break; }
             }
             if (!pipeline) {
+                const known = Array.from(rtmsCaptionPipelines.values()).map(p => p.sessionCode);
+                console.log(`RTMS caption-url: no pipeline for "${sessionCode}". Active pipelines: ${known.length ? known.join(', ') : '(none)'}`);
                 res.writeHead(404, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'No active RTMS pipeline for that session code' }));
+                res.end(JSON.stringify({
+                    error: known.length
+                        ? `No active pipeline for "${sessionCode}". Active right now: ${known.join(', ')}. The RTMS stream likely restarted -- stop and start captions again.`
+                        : `No active RTMS pipeline. The stream has stopped (meeting ended or server restarted). Start captions again.`
+                }));
                 return;
             }
             if (!captionUrl || !/^https:\/\/[^\s]+$/i.test(captionUrl)) {
@@ -661,6 +667,12 @@ const server = http.createServer((req, res) => {
                     if (pipeline.baselineWs) pipeline.baselineWs.close();
                     if (pipeline.turnWs) pipeline.turnWs.close();
                     rtmsCaptionPipelines.delete(streamId);
+                    // Don't leave the panel pointing at a pipeline that no
+                    // longer exists -- that produces a confusing 404 when the
+                    // host later tries to set a caption URL.
+                    if (lastRtmsSessionCode === pipeline.sessionCode) {
+                        lastRtmsSessionCode = null;
+                    }
                 }
                 console.log('RTMS client and caption pipeline stopped for stream', streamId);
                 return;
