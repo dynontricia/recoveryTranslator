@@ -67,6 +67,50 @@ let lastRtmsSessionCode = null;
 // keep seq incrementing continuously across the whole meeting. Zoom
 // recommends retrying with randomized exponential backoff, giving up after
 // roughly 5 seconds so we move on to the next caption rather than block.
+// Zoom treats every POST as its own caption line, and OpenAI's deltas arrive
+// as tiny fragments (often a word or two), so posting each delta directly
+// produced a line break every couple of words. Buffer deltas per language
+// and flush on a natural boundary instead: either sentence-ending
+// punctuation, a max length, or a short pause in new text arriving.
+const CAPTION_FLUSH_PAUSE_MS = 1200;
+const CAPTION_MAX_CHARS = 180;
+
+function queueZoomCaption(pipeline, text, lang) {
+    if (!pipeline.zoomCaptionUrl || !text) return;
+
+    pipeline.captionBuffers = pipeline.captionBuffers || {};
+    pipeline.captionFlushTimers = pipeline.captionFlushTimers || {};
+    pipeline.captionBuffers[lang] = (pipeline.captionBuffers[lang] || '') + text;
+
+    const buffered = pipeline.captionBuffers[lang];
+
+    // Flush immediately on a sentence boundary or when the line gets long,
+    // so captions stay readable rather than growing unboundedly.
+    if (/[.!?¡¿]\s*$/.test(buffered) || buffered.length >= CAPTION_MAX_CHARS) {
+        flushZoomCaption(pipeline, lang);
+        return;
+    }
+
+    // Otherwise flush after a brief pause in new text -- that's an utterance
+    // boundary in practice (speaker paused), which is where a line break
+    // actually belongs.
+    if (pipeline.captionFlushTimers[lang]) clearTimeout(pipeline.captionFlushTimers[lang]);
+    pipeline.captionFlushTimers[lang] = setTimeout(() => {
+        flushZoomCaption(pipeline, lang);
+    }, CAPTION_FLUSH_PAUSE_MS);
+}
+
+function flushZoomCaption(pipeline, lang) {
+    if (!pipeline.captionBuffers) return;
+    const text = (pipeline.captionBuffers[lang] || '').trim();
+    pipeline.captionBuffers[lang] = '';
+    if (pipeline.captionFlushTimers && pipeline.captionFlushTimers[lang]) {
+        clearTimeout(pipeline.captionFlushTimers[lang]);
+        pipeline.captionFlushTimers[lang] = null;
+    }
+    if (text) postZoomCaption(pipeline, text, lang);
+}
+
 async function postZoomCaption(pipeline, text, lang) {
     if (!pipeline.zoomCaptionUrl || !text || !text.trim()) return;
 
@@ -186,7 +230,7 @@ function connectTranscriptionWs(pipeline) {
             if (pipeline.awaitingSegmentSpace) { delta = ' ' + delta; pipeline.awaitingSegmentSpace = false; }
             console.log(`RTMS/OpenAI [${pipeline.sessionCode}] transcription: DELTA "${delta}"`);
             broadcast(pipeline.sessionCode, 'english', delta);
-            postZoomCaption(pipeline, delta, 'en-US');
+            queueZoomCaption(pipeline, delta, 'en-US');
         }
         // Catch-all: log any event type we don't already have a specific
         // handler for, at most once every 20 events, so we can see what
@@ -238,7 +282,16 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
             // and avoiding same-language "cleanup" text leaking through.
             if (broadcastLanguage === 'spanish' && pipeline.spanishTurn) return;
             broadcast(pipeline.sessionCode, broadcastLanguage, ev.delta);
-            postZoomCaption(pipeline, ev.delta, broadcastLanguage === 'spanish' ? 'es-ES' : 'en-US');
+            // Only English goes to Zoom's native caption bar. Zoom gives a
+            // meeting exactly one caption token with no per-viewer language
+            // filtering for third-party captions, so posting both languages
+            // interleaved them into one unreadable stream. Spanish still
+            // flows to /display, where the two stay properly separated.
+            // Note this correctly INCLUDES the Spanish-turn case, where this
+            // connection carries the English translation of Spanish speech.
+            if (broadcastLanguage === 'english') {
+                queueZoomCaption(pipeline, ev.delta, 'en-US');
+            }
         }
         if (!['session.updated', 'error', 'session.output_transcript.delta'].includes(ev.type)) {
             if (pipeline[wsKey + 'EventCount'] % 20 === 1) {
@@ -663,6 +716,11 @@ const server = http.createServer((req, res) => {
                 const pipeline = rtmsCaptionPipelines.get(streamId);
                 if (pipeline) {
                     if (pipeline.pauseTimer) clearTimeout(pipeline.pauseTimer);
+                    // Flush any buffered caption text before tearing down, so
+                    // the last words spoken aren't silently dropped.
+                    if (pipeline.captionBuffers) {
+                        Object.keys(pipeline.captionBuffers).forEach(lang => flushZoomCaption(pipeline, lang));
+                    }
                     if (pipeline.transcriptionWs) pipeline.transcriptionWs.close();
                     if (pipeline.baselineWs) pipeline.baselineWs.close();
                     if (pipeline.turnWs) pipeline.turnWs.close();
