@@ -423,6 +423,9 @@ const server = http.createServer((req, res) => {
     else if (pathname === '/transcript' || pathname === '/transcript.html') {
         serveFile(res, './transcript.html', 'text/html; charset=UTF-8');
     }
+    else if (pathname === '/test-dual-feed' || pathname === '/test-dual-feed.html') {
+        serveFile(res, './test-dual-feed.html', 'text/html; charset=UTF-8');
+    }
     else if (pathname === '/zoom-app' || pathname === '/zoom-app.html') {
         serveFile(res, './zoom-app.html', 'text/html; charset=UTF-8', ZOOM_APP_SECURITY_HEADERS);
     }
