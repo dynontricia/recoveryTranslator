@@ -52,7 +52,9 @@
     <button class="btn-turn" onclick="saveCaptionUrl()">Send captions to Zoom</button>
 </div>
 
-<button class="btn-turn" id="turn-btn" onclick="toggleSpanishTurn()" style="display:none">🎤 Spanish speaker (switch)</button>
+<div class="status ok" id="dual-feed-note" style="display:none">
+    Both English and Spanish run continuously — no need to switch when someone speaks Spanish.
+</div>
 
 <pre id="log"></pre>
 
@@ -121,7 +123,7 @@
                 const info = document.getElementById('session-info');
                 info.style.display = '';
                 info.innerHTML = `Captions live. <a href="${link}" target="_blank">${link}</a>`;
-                document.getElementById('turn-btn').style.display = '';
+                document.getElementById('dual-feed-note').style.display = '';
                 document.getElementById('caption-url-box').style.display = '';
                 log('Found caption session: ' + currentSessionCode);
                 setStatus('ok', 'Captions are live for session ' + currentSessionCode + '.');
@@ -171,29 +173,6 @@
         }
     }
 
-    async function toggleSpanishTurn() {
-        if (!currentSessionCode) return;
-        const btn = document.getElementById('turn-btn');
-        const nextActive = !spanishTurnActive;
-        btn.disabled = true;
-        try {
-            const res = await fetch('/zoom/spanish-turn', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionCode: currentSessionCode, active: nextActive })
-            });
-            const data = await res.json();
-            spanishTurnActive = data.spanishTurn;
-            btn.textContent = spanishTurnActive ? '◀ Return to English' : '🎤 Spanish speaker (switch)';
-            btn.classList.toggle('active', spanishTurnActive);
-            log('Spanish turn is now: ' + spanishTurnActive);
-        } catch (error) {
-            log('Spanish turn toggle failed: ' + error.message);
-        } finally {
-            btn.disabled = false;
-        }
-    }
-
     async function doStopRTMS() {
         try {
             log('Calling sdk.stopRTMS()...');
@@ -203,7 +182,7 @@
             document.getElementById('start-btn').disabled = false;
             document.getElementById('stop-btn').disabled = true;
             document.getElementById('session-info').style.display = 'none';
-            document.getElementById('turn-btn').style.display = 'none';
+            document.getElementById('dual-feed-note').style.display = 'none';
             currentSessionCode = null;
         } catch (error) {
             log('stopRTMS FAILED: ' + error.message);

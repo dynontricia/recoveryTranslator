@@ -45,6 +45,12 @@ const rtmsCaptionPipelines = new Map();
 // instead of the raw Zoom stream ID.
 let lastRtmsSessionCode = null;
 
+// Zoom OAuth access token, captured at install time. Used to auto-fetch each
+// meeting's closed-caption token so the host doesn't paste it every meeting.
+// In-memory only, so it's lost on restart -- manual paste remains the
+// fallback. Persisting (and refreshing) it is a future improvement.
+let zoomAccessToken = null;
+
 // RTMS's default audio is 16kHz mono PCM16, but OpenAI's realtime API
 // requires 24kHz. 16000->24000 is a clean 2:3 ratio, so a simple linear
 // interpolation resampler is enough -- no need for a heavier audio library
@@ -183,69 +189,6 @@ function resamplePCM16(inputBuffer, inputRate, outputRate) {
 // browser pipeline: gpt-realtime-whisper, delay: high, no VAD, pause-
 // triggered commit). Audio is only actually sent to this connection when
 // NOT in a Spanish turn -- see the onAudioData routing below.
-function connectTranscriptionWs(pipeline) {
-    const apiKey = sessions[pipeline.sessionCode].apiKey;
-    // Confirmed by a live error from OpenAI: a session's type must be set at
-    // connection time via ?intent=transcription, not switched afterward with
-    // session.update on a connection opened as a general realtime session
-    // ("Passing a transcription session update to a realtime session is not
-    // allowed"). This matches the older, precedented connection pattern
-    // rather than the "connect generic, then convert" approach that failed.
-    const ws = new WebSocket('wss://api.openai.com/v1/realtime?intent=transcription', {
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'OpenAI-Safety-Identifier': 'recovery-translator' }
-    });
-    pipeline.transcriptionWs = ws;
-    pipeline.transcriptionReady = false;
-
-    ws.on('open', () => {
-        console.log(`RTMS/OpenAI [${pipeline.sessionCode}] transcription: connected, sending session.update`);
-        ws.send(JSON.stringify({
-            type: 'session.update',
-            session: {
-                type: 'transcription',
-                audio: {
-                    input: {
-                        format: { type: 'audio/pcm', rate: 24000 },
-                        transcription: { model: 'gpt-realtime-whisper', language: 'en', delay: 'high' },
-                        turn_detection: null
-                    }
-                }
-            }
-        }));
-    });
-
-    ws.on('message', (raw) => {
-        let ev; try { ev = JSON.parse(raw.toString()); } catch (e) { return; }
-        pipeline.transcriptionEventCount = (pipeline.transcriptionEventCount || 0) + 1;
-
-        if (ev.type === 'session.updated') {
-            console.log(`RTMS/OpenAI [${pipeline.sessionCode}] transcription: session.updated confirmed -- live`);
-            pipeline.transcriptionReady = true;
-        }
-        if (ev.type === 'error') {
-            console.error(`RTMS/OpenAI [${pipeline.sessionCode}] transcription: ERROR:`, JSON.stringify(ev.error || ev));
-        }
-        if (ev.type === 'conversation.item.input_audio_transcription.delta') {
-            let delta = ev.delta;
-            if (pipeline.awaitingSegmentSpace) { delta = ' ' + delta; pipeline.awaitingSegmentSpace = false; }
-            console.log(`RTMS/OpenAI [${pipeline.sessionCode}] transcription: DELTA "${delta}"`);
-            broadcast(pipeline.sessionCode, 'english', delta);
-            queueZoomCaption(pipeline, delta, 'en-US');
-        }
-        // Catch-all: log any event type we don't already have a specific
-        // handler for, at most once every 20 events, so we can see what
-        // OpenAI is actually sending instead of guessing blind.
-        if (!['session.updated', 'error', 'conversation.item.input_audio_transcription.delta'].includes(ev.type)) {
-            if (pipeline.transcriptionEventCount % 20 === 1) {
-                console.log(`RTMS/OpenAI [${pipeline.sessionCode}] transcription: other event type seen: ${ev.type}`);
-            }
-        }
-    });
-
-    ws.on('error', (err) => console.error(`RTMS/OpenAI [${pipeline.sessionCode}] transcription: WS error:`, err.message));
-    ws.on('close', (code, reason) => console.log(`RTMS/OpenAI [${pipeline.sessionCode}] transcription: closed. code=${code}`));
-}
-
 // Opens a translate WebSocket (gpt-realtime-translate). Used for both the
 // always-on baseline (output: es) and the on-demand turn session
 // (output: en, spun up only while a Spanish speaker has the floor).
@@ -274,21 +217,15 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
             console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): ERROR:`, JSON.stringify(ev.error || ev));
         }
         if (ev.type === 'session.output_transcript.delta') {
-            console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): DELTA "${ev.delta}"`);
-            // Baseline (Spanish) audio keeps flowing continuously even during
-            // a turn -- OpenAI's guidance is to keep appending audio without
-            // gaps -- but its captions are suppressed at broadcast time while
-            // a Spanish speaker has the floor, matching the browser pipeline
-            // and avoiding same-language "cleanup" text leaking through.
-            if (broadcastLanguage === 'spanish' && pipeline.spanishTurn) return;
+            // Dual-feed: each connection always outputs its own fixed
+            // language regardless of what was spoken (confirmed working by
+            // live test -- same-language passthrough is reliable). So there
+            // is no turn state, no detection, and no suppression: this
+            // feed's output always belongs in this feed's box.
             broadcast(pipeline.sessionCode, broadcastLanguage, ev.delta);
-            // Only English goes to Zoom's native caption bar. Zoom gives a
-            // meeting exactly one caption token with no per-viewer language
-            // filtering for third-party captions, so posting both languages
-            // interleaved them into one unreadable stream. Spanish still
-            // flows to /display, where the two stay properly separated.
-            // Note this correctly INCLUDES the Spanish-turn case, where this
-            // connection carries the English translation of Spanish speech.
+            // Only English goes to Zoom's native caption bar -- Zoom gives a
+            // meeting one caption token with no per-viewer language filter,
+            // so posting both interleaved them unreadably.
             if (broadcastLanguage === 'english') {
                 queueZoomCaption(pipeline, ev.delta, 'en-US');
             }
@@ -304,37 +241,28 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
     ws.on('close', (code, reason) => console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): closed. code=${code}`));
 }
 
-// Both the toggle and the queue (if ever added server-side) funnel through
-// these. Unlike the browser version, we don't need a "discard garbage"
-// flush at turn end -- we simply never send audio to the transcription
-// session while spanishTurn is true, so its buffer is genuinely empty when
-// the turn ends, and no cleanup commit is needed.
-function beginSpanishTurn(pipeline) {
-    if (pipeline.spanishTurn) return;
-    pipeline.spanishTurn = true;
-    console.log(`RTMS [${pipeline.sessionCode}]: Spanish turn started`);
-    broadcastControl(pipeline.sessionCode, { type: 'spanish_turn', active: true });
-
-    // Flush the transcription session's in-flight English tail before we
-    // stop feeding it audio, so nothing is cut off mid-word.
-    if (pipeline.transcriptionWs && pipeline.transcriptionWs.readyState === WebSocket.OPEN) {
-        pipeline.transcriptionWs.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+// Fetches the meeting's closed-caption token automatically so the host
+// doesn't have to paste it every meeting. Zoom's UUIDs contain characters
+// (/ + =) that MUST be double-URL-encoded -- skipping that is the documented
+// cause of "3001 Meeting does not exist" errors on this endpoint.
+async function fetchZoomCaptionUrl(pipeline, meetingUuid, accessToken) {
+    if (!meetingUuid || !accessToken) return false;
+    const encoded = encodeURIComponent(encodeURIComponent(meetingUuid));
+    try {
+        const res = await fetch(`https://api.zoom.us/v2/meetings/${encoded}/token?type=closed_caption`, {
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        const data = await res.json();
+        if (res.ok && data.token) {
+            pipeline.zoomCaptionUrl = data.token;
+            console.log(`RTMS [${pipeline.sessionCode}]: caption token fetched automatically -- no manual paste needed`);
+            return true;
+        }
+        console.log(`RTMS [${pipeline.sessionCode}]: auto caption-token fetch failed (HTTP ${res.status}): ${JSON.stringify(data).slice(0, 200)}. Host can still paste the token manually.`);
+    } catch (err) {
+        console.error(`RTMS [${pipeline.sessionCode}]: auto caption-token fetch error:`, err.message);
     }
-    if (pipeline.pauseTimer) { clearTimeout(pipeline.pauseTimer); pipeline.pauseTimer = null; }
-    broadcast(pipeline.sessionCode, 'english', '\n\n');
-
-    connectTranslateWs(pipeline, 'en', 'turnWs', 'turnReady', 'english');
-}
-
-function endSpanishTurn(pipeline) {
-    if (!pipeline.spanishTurn) return;
-    pipeline.spanishTurn = false;
-    console.log(`RTMS [${pipeline.sessionCode}]: Spanish turn ended`);
-    broadcastControl(pipeline.sessionCode, { type: 'spanish_turn', active: false });
-
-    if (pipeline.turnWs) { pipeline.turnWs.close(); pipeline.turnWs = null; pipeline.turnReady = false; }
-    broadcast(pipeline.sessionCode, 'english', '\n\n');
-    // No discard-commit needed here -- see comment above beginSpanishTurn.
+    return false;
 }
 
 function createSession(apiKey, micDistance, mode) {
@@ -606,7 +534,7 @@ const server = http.createServer((req, res) => {
     }
 
         // Toggle for "a Spanish speaker has the floor," called from the Zoom
-        // App panel -- same underlying begin/endSpanishTurn as the browser
+        // App panel. Now a no-op -- dual-feed removed the need for a toggle.
         // leader flow, just driven by sessionCode instead of a button on the
         // leader screen.
         // Receives the host's Zoom closed-caption token URL ("Copy the API token"
@@ -670,9 +598,11 @@ const server = http.createServer((req, res) => {
                 res.end(JSON.stringify({ error: 'No active RTMS pipeline for that session code' }));
                 return;
             }
-            if (active) beginSpanishTurn(pipeline); else endSpanishTurn(pipeline);
+            // Dual-feed made this obsolete: both languages now run
+            // continuously, so there is no "turn" to switch. Kept as a
+            // harmless no-op so any older panel build doesn't error.
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ spanishTurn: pipeline.spanishTurn }));
+            res.end(JSON.stringify({ spanishTurn: false, note: 'Both languages now run continuously; no toggle needed.' }));
         });
     }
 
@@ -724,9 +654,8 @@ const server = http.createServer((req, res) => {
                     if (pipeline.captionBuffers) {
                         Object.keys(pipeline.captionBuffers).forEach(lang => flushZoomCaption(pipeline, lang));
                     }
-                    if (pipeline.transcriptionWs) pipeline.transcriptionWs.close();
-                    if (pipeline.baselineWs) pipeline.baselineWs.close();
-                    if (pipeline.turnWs) pipeline.turnWs.close();
+                    if (pipeline.enWs) pipeline.enWs.close();
+                    if (pipeline.esWs) pipeline.esWs.close();
                     rtmsCaptionPipelines.delete(streamId);
                     // Don't leave the panel pointing at a pipeline that no
                     // longer exists -- that produces a confusing 404 when the
@@ -769,78 +698,59 @@ const server = http.createServer((req, res) => {
 
                     const pipeline = {
                         sessionCode,
-                        transcriptionWs: null, transcriptionReady: false,
-                        baselineWs: null, baselineReady: false,
-                        turnWs: null, turnReady: false,
-                        spanishTurn: false,
-                        pauseTimer: null,
-                        awaitingSegmentSpace: false,
+                        enWs: null, enReady: false,
+                        esWs: null, esReady: false,
                         zoomCaptionUrl: null,
                         captionSeq: 1
                     };
                     rtmsCaptionPipelines.set(streamId, pipeline);
 
-                    connectTranscriptionWs(pipeline);
-                    connectTranslateWs(pipeline, 'es', 'baselineWs', 'baselineReady', 'spanish');
+                    // Dual-feed architecture (validated by live test): two
+                    // always-on translate sessions, each locked to its own
+                    // OUTPUT language. Neither cares what language went in --
+                    // the English feed always emits English (translating
+                    // Spanish, passing through English), and the Spanish feed
+                    // always emits Spanish. No language detection, no manual
+                    // turn toggle, no commit timing. Both get identical audio.
+                    connectTranslateWs(pipeline, 'en', 'enWs', 'enReady', 'english');
+                    connectTranslateWs(pipeline, 'es', 'esWs', 'esReady', 'spanish');
+
+                    // Try to fetch the caption token automatically so the host
+                    // doesn't paste it each meeting. Falls back silently to
+                    // manual paste if this doesn't work.
+                    if (zoomAccessToken && payload.payload && payload.payload.meeting_uuid) {
+                        fetchZoomCaptionUrl(pipeline, payload.payload.meeting_uuid, zoomAccessToken);
+                    }
 
                     let audioFrameCount = 0;
                     client.onAudioData((data, size, timestamp, metadata) => {
                         try {
                             audioFrameCount++;
-                            // We've never actually confirmed what shape RTMS
-                            // hands us here -- log it once so we can see
-                            // whether Buffer.from(data) is even doing the
-                            // right thing, instead of assuming.
                             if (audioFrameCount === 1) {
-                                console.log(`RTMS [${pipeline.sessionCode}]: first audio frame -- typeof data=${typeof data}, constructor=${data && data.constructor && data.constructor.name}, byteLength=${data && data.byteLength}, size param=${size}, ${typeof data === 'string' ? 'DECODING AS BASE64' : 'using as raw binary'}`);
+                                console.log(`RTMS [${pipeline.sessionCode}]: first audio frame -- byteLength=${data && data.byteLength}, size=${size}`);
                             }
 
                             const resampled = resamplePCM16(toAudioBuffer(data), 16000, 24000);
-                            const b64 = resampled.toString('base64');
-                            // Confirmed by a live error from OpenAI: the
-                            // /realtime/translations endpoint uses different
-                            // client event names than the plain /realtime
-                            // endpoint -- 'session.input_audio_buffer.append',
-                            // not 'input_audio_buffer.append'. Only 3 event
-                            // types are valid there at all (session.update,
-                            // session.input_audio_buffer.append, session.close)
-                            // -- no commit, confirming translate sessions
-                            // segment speech internally via built-in VAD.
-                            const translateAppendMsg = JSON.stringify({ type: 'session.input_audio_buffer.append', audio: b64 });
-                            const transcriptionAppendMsg = JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 });
+                            // The /realtime/translations endpoint requires the
+                            // 'session.' prefix on this event name (confirmed
+                            // by a live rejection from OpenAI). Translate
+                            // sessions also segment speech internally via
+                            // built-in VAD, so there is no commit to send.
+                            const appendMsg = JSON.stringify({
+                                type: 'session.input_audio_buffer.append',
+                                audio: resampled.toString('base64')
+                            });
 
-                            if (audioFrameCount % 100 === 1) {
-                                console.log(`RTMS [${pipeline.sessionCode}]: frame ${audioFrameCount}, resampled ${resampled.length} bytes, baselineWs=${pipeline.baselineWs && pipeline.baselineWs.readyState}, transcriptionWs=${pipeline.transcriptionWs && pipeline.transcriptionWs.readyState}`);
+                            if (audioFrameCount % 250 === 1) {
+                                console.log(`RTMS [${pipeline.sessionCode}]: frame ${audioFrameCount}, enWs=${pipeline.enWs && pipeline.enWs.readyState}, esWs=${pipeline.esWs && pipeline.esWs.readyState}`);
                             }
 
-                            // Baseline (Spanish) always gets audio, same as the
-                            // browser architecture -- suppressed at the
-                            // BROADCAST level during a turn (see
-                            // connectTranslateWs), not the audio-feed level,
-                            // since OpenAI still needs continuous audio to
-                            // avoid the session going stale.
-                            if (pipeline.baselineWs && pipeline.baselineWs.readyState === WebSocket.OPEN) {
-                                pipeline.baselineWs.send(translateAppendMsg);
+                            // Identical audio to both feeds, always.
+                            if (pipeline.enWs && pipeline.enWs.readyState === WebSocket.OPEN) {
+                                pipeline.enWs.send(appendMsg);
                             }
-
-                            if (pipeline.spanishTurn) {
-                                if (pipeline.turnWs && pipeline.turnWs.readyState === WebSocket.OPEN) {
-                                    pipeline.turnWs.send(translateAppendMsg);
-                                }
-                            } else if (pipeline.transcriptionWs && pipeline.transcriptionWs.readyState === WebSocket.OPEN) {
-                                pipeline.transcriptionWs.send(transcriptionAppendMsg);
-                                // Same pause-triggered commit design already
-                                // proven out in the browser pipeline: bound the
-                                // buffer by committing only after a real pause,
-                                // never on a fixed timer (that caused mid-word
-                                // chopping there).
-                                if (pipeline.pauseTimer) clearTimeout(pipeline.pauseTimer);
-                                pipeline.pauseTimer = setTimeout(() => {
-                                    if (!pipeline.spanishTurn && pipeline.transcriptionWs && pipeline.transcriptionWs.readyState === WebSocket.OPEN) {
-                                        pipeline.transcriptionWs.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-                                        pipeline.awaitingSegmentSpace = true;
-                                    }
-                                }, 2500);
+                            if (pipeline.esWs && pipeline.esWs.readyState === WebSocket.OPEN) {
+                                pipeline.esWs.send(appendMsg);
                             }
                         } catch (err) {
                             console.error('RTMS audio processing error:', err.message);
@@ -935,6 +845,7 @@ const server = http.createServer((req, res) => {
                 // For now, just log it -- storing/using this token for further
                 // API calls is a later step once the basic OAuth flow is proven
                 // to work end to end.
+                zoomAccessToken = tokenData.access_token;
                 console.log('Zoom OAuth success. Scopes granted:', tokenData.scope);
 
                 res.writeHead(200, { 'Content-Type': 'text/html' });
