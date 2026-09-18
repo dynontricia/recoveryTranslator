@@ -206,7 +206,14 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
     });
 
     ws.on('message', (raw) => {
-        let ev; try { ev = JSON.parse(raw.toString()); } catch (e) { return; }
+        let ev;
+        try {
+            ev = JSON.parse(raw.toString());
+            console.log(`received event:`, JSON.stringify(ev));
+        } catch (e) {
+            console.log(e);
+            return;
+        }
         pipeline[wsKey + 'EventCount'] = (pipeline[wsKey + 'EventCount'] || 0) + 1;
 
         if (ev.type === 'session.updated') {
@@ -883,7 +890,7 @@ wss.on('connection', (ws, req) => {
 
         ws.on('message', (data) => {
             const msg = JSON.parse(data);
-
+            console.log('message:', msg);
             if (msg.type === 'transcript') {
                 broadcast(sessionCode, msg.language, msg.delta);
             }
@@ -939,6 +946,7 @@ wss.on('connection', (ws, req) => {
 
         ws.on('message', (data) => {
             const msg = JSON.parse(data);
+            console.log('list message:', msg);
 
             if (msg.type === 'request_speak') {
                 if (!session.speakQueue.find(r => r.id === id)) {
