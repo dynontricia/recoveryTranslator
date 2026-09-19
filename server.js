@@ -299,7 +299,7 @@ function connectCaptionTranscriptionWs(pipeline) {
         ws.send(JSON.stringify({
             type: 'session.update',
             session: {
-                type: 'transcription',
+                type: 'realtime',
                 audio: {
                     input: {
                         format: { type: 'audio/pcm', rate: 24000 },
@@ -309,9 +309,12 @@ function connectCaptionTranscriptionWs(pipeline) {
                             keywords: RECOVERY_KEYWORDS,
                             languages: ['en', 'es'],
                         },
-                        // Semantic VAD is intentionally less eager here because
-                        // recovery shares often contain meaningful pauses.
-                        turn_detection: { type: 'semantic_vad', eagerness: 'low' }
+                        turn_detection: {
+                            type: 'server_vad',
+                            threshold: 0.5,
+                            prefix_padding_ms: 300,
+                            silence_duration_ms: 600
+                        }
                     }
                 }
             }
