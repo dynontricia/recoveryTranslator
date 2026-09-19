@@ -297,7 +297,7 @@ async function translateTranscriptToEnglish(pipeline, transcript, sourceLanguage
 // English and invoke glossary-controlled text translation for other languages.
 function connectCaptionTranscriptionWs(pipeline) {
     const apiKey = sessions[pipeline.sessionCode].apiKey;
-    const ws = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-realtime', {
+    const ws = new WebSocket('wss://api.openai.com/v1/realtime/transcription_sessions', {
         headers: { 'Authorization': `Bearer ${apiKey}`, 'OpenAI-Safety-Identifier': 'recovery-translator' }
     });
     pipeline.transcribeWs = ws;
@@ -308,19 +308,20 @@ function connectCaptionTranscriptionWs(pipeline) {
         ws.send(JSON.stringify({
             type: 'session.update',
             session: {
-                type: 'realtime',
+                type: 'transcription',
                 audio: {
                     input: {
-                        format: { type: 'audio/pcm', rate: 24000 },
+                        format: {
+                            type: 'audio/pcm',
+                            rate: 24000
+                        },
                         transcription: {
-                            model: 'gpt-transcribe',
+                            model: 'gpt-live-transcribe',
                             prompt: 'A live peer-recovery fellowship meeting. Transcribe exactly what the speaker says. Preserve recovery terminology, acronyms, names, Step/Tradition/Concept numbers, and code-switching.',
                             keywords: RECOVERY_KEYWORDS,
                             languages: ['en', 'es'],
                             delay: 'low'
                         },
-                        // Captioning benefits from shorter turns. The transcription
-                        // model still gets recovery vocabulary/language hints above.
                         turn_detection: { type: 'semantic_vad', eagerness: 'high' }
                     }
                 }
