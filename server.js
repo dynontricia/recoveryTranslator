@@ -319,8 +319,7 @@ function connectCaptionTranscriptionWs(pipeline) {
                             model: 'gpt-transcribe',
                             prompt: 'A live peer-recovery fellowship meeting. Transcribe exactly what the speaker says. Preserve recovery terminology, acronyms, names, Step/Tradition/Concept numbers, and code-switching.',
                             keywords: RECOVERY_KEYWORDS,
-                            languages: ['en', 'es'],
-                            delay: 'low'
+                            languages: ['en', 'es']
                         },
                         turn_detection: {
                             type: 'server_vad',
