@@ -78,8 +78,8 @@ let zoomAccessToken = null;
 // produced a line break every couple of words. Buffer deltas per language
 // and flush on a natural boundary instead: either sentence-ending
 // punctuation, a max length, or a short pause in new text arriving.
-const CAPTION_FLUSH_PAUSE_MS = 2200;
-const CAPTION_MAX_CHARS = 420;
+const CAPTION_FLUSH_PAUSE_MS = 1200;
+const CAPTION_MAX_CHARS = 250;
 
 // Recovery-specific hints for speech recognition and text translation.
 // Keep these as literal terms/phrases likely to be spoken in meetings.
@@ -297,14 +297,14 @@ async function translateTranscriptToEnglish(pipeline, transcript, sourceLanguage
 // English and invoke glossary-controlled text translation for other languages.
 function connectCaptionTranscriptionWs(pipeline) {
     const apiKey = sessions[pipeline.sessionCode].apiKey;
-    const ws = new WebSocket('wss://api.openai.com/v1/realtime/transcription_sessions', {
+    const ws = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini', {
         headers: { 'Authorization': `Bearer ${apiKey}`, 'OpenAI-Safety-Identifier': 'recovery-translator' }
     });
     pipeline.transcribeWs = ws;
     pipeline.transcribeReady = false;
 
     ws.on('open', () => {
-        console.log(`RTMS/OpenAI [${pipeline.sessionCode}] multilingual transcription: connected`);
+        console.log(`RTMS/OpenAI multilingual transcription: connected`);
         ws.send(JSON.stringify({
             type: 'session.update',
             session: {
@@ -316,13 +316,18 @@ function connectCaptionTranscriptionWs(pipeline) {
                             rate: 24000
                         },
                         transcription: {
-                            model: 'gpt-live-transcribe',
+                            model: 'gpt-transcribe',
                             prompt: 'A live peer-recovery fellowship meeting. Transcribe exactly what the speaker says. Preserve recovery terminology, acronyms, names, Step/Tradition/Concept numbers, and code-switching.',
                             keywords: RECOVERY_KEYWORDS,
                             languages: ['en', 'es'],
                             delay: 'low'
                         },
-                        turn_detection: { type: 'semantic_vad', eagerness: 'high' }
+                        turn_detection: {
+                            type: 'server_vad',
+                            threshold: 0.5,
+                            prefix_padding_ms: 300,
+                            silence_duration_ms: 350
+                        }
                     }
                 }
             }
