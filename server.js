@@ -380,7 +380,9 @@ function connectCaptionTranscriptionWs(pipeline) {
         }
     });
 
-    ws.on('error', (err) => console.error(`RTMS/OpenAI [${pipeline.sessionCode}] transcription WS error:`, err.message));
+    ws.on('error', (err) =>
+        console.error(`RTMS/OpenAI [${pipeline.sessionCode}] transcription WS error:`, err)
+    );
     ws.on('close', (code) => console.log(`RTMS/OpenAI [${pipeline.sessionCode}] transcription closed. code=${code}`));
 }
 
