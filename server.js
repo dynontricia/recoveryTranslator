@@ -308,7 +308,7 @@ function connectCaptionTranscriptionWs(pipeline) {
         ws.send(JSON.stringify({
             type: 'session.update',
             session: {
-                type: 'transcription',
+                type: 'realtime',
                 audio: {
                     input: {
                         format: {
@@ -511,8 +511,7 @@ const server = http.createServer((req, res) => {
         serveFile(res, './recoveryTrans.png', 'image/png');
     }
 
-        // One endpoint, called with targetLanguage 'es' (baseline) or 'en'
-    // (spun up for a Spanish speaker's turn).
+    // One endpoint, called with targetLanguage 'es' (baseline) or 'en'
     else if (req.method === 'POST' && pathname === '/session/client-secret') {
         let body = '';
         req.on('data', chunk => { body += chunk.toString(); });
@@ -562,8 +561,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Mints a client secret for the dedicated English transcription session
-    // (separate from the translate sessions above -- different endpoint/shape).
+    // Mints a client secret for the dedicated English transcription session
     else if (req.method === 'POST' && pathname === '/session/transcription-secret') {
         let body = '';
         req.on('data', chunk => { body += chunk.toString(); });
