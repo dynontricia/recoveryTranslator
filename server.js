@@ -81,6 +81,30 @@ let zoomAccessToken = null;
 const CAPTION_FLUSH_PAUSE_MS = 1200;
 const CAPTION_MAX_CHARS = 180;
 
+// Recovery-specific hints for speech recognition and text translation.
+// Keep these as literal terms/phrases likely to be spoken in meetings.
+const RECOVERY_KEYWORDS = [
+    'home group', 'group conscience', 'trusted servant', 'sponsor', 'sponsee',
+    'amends', 'inventory', 'Higher Power', 'primary purpose',
+    'General Service Representative', 'GSR', 'District Committee Member', 'DCM',
+    'Area Delegate', 'service position', 'sobriety date', 'newcomer'
+];
+
+const RECOVERY_GLOSSARY = `
+Use recovery-fellowship terminology consistently. Preferred English terms include:
+- grupo base / grupo de origen -> home group
+- conciencia de grupo -> group conscience
+- padrino / madrina (recovery context) -> sponsor
+- ahijado / ahijada (recovery context) -> sponsee
+- servidor de confianza -> trusted servant
+- propósito primordial -> primary purpose
+- enmiendas / reparar daños (Steps context) -> amends / making amends
+- inventario (Steps context) -> inventory
+- Poder Superior -> Higher Power
+- representante de servicios generales -> General Service Representative (GSR)
+Preserve fellowship names, Step/Tradition/Concept numbers, acronyms, and proper names.
+`;
+
 function queueZoomCaption(pipeline, text, lang) {
     if (!pipeline.zoomCaptionUrl || !text) return;
 
@@ -177,21 +201,10 @@ function resamplePCM16(inputBuffer, inputRate, outputRate) {
     return output;
 }
 
-// Opens a server-side WebSocket to OpenAI's realtime API and configures it
-// as an English transcription session -- the server-side equivalent of the
-// browser's WebRTC transcription session, same model/settings (gpt-realtime-
-// whisper, delay: high, no VAD -- manual commit only), same pause-triggered
-// commit design. Logs each stage clearly since this connection pattern
-// (standard realtime endpoint + session.update to type:"transcription")
-// hasn't been verified against a live response yet -- these logs are how
-// we'll know definitively whether it's right.
-// Opens the English transcription WebSocket (same model/settings as the
-// browser pipeline: gpt-realtime-whisper, delay: high, no VAD, pause-
-// triggered commit). Audio is only actually sent to this connection when
-// NOT in a Spanish turn -- see the onAudioData routing below.
-// Opens a translate WebSocket (gpt-realtime-translate). Used for both the
-// always-on baseline (output: es) and the on-demand turn session
-// (output: en, spun up only while a Spanish speaker has the floor).
+// Opens the Spanish speech-translation WebSocket. This remains the always-on
+// listening feed for Spanish attendees. English captions no longer come from
+// gpt-realtime-translate; they come from the multilingual transcription path
+// below so same-language English is never unnecessarily regenerated.
 function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcastLanguage) {
     const apiKey = sessions[pipeline.sessionCode].apiKey;
     const ws = new WebSocket('wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate', {
@@ -201,51 +214,146 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
     pipeline[readyKey] = false;
 
     ws.on('open', () => {
-        console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): connected, sending session.update`);
+        console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): connected`);
         ws.send(JSON.stringify({ type: 'session.update', session: { audio: { output: { language: targetLanguage } } } }));
     });
 
     ws.on('message', (raw) => {
         let ev;
-        try {
-            ev = JSON.parse(raw.toString());
-            console.log(`received event:`, JSON.stringify(ev));
-        } catch (e) {
-            console.log(e);
-            return;
-        }
-        pipeline[wsKey + 'EventCount'] = (pipeline[wsKey + 'EventCount'] || 0) + 1;
+        try { ev = JSON.parse(raw.toString()); } catch (e) { return; }
 
-        if (ev.type === 'session.updated') {
-            console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): session.updated confirmed -- live`);
-            pipeline[readyKey] = true;
-        }
+        if (ev.type === 'session.updated') pipeline[readyKey] = true;
         if (ev.type === 'error') {
-            console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): ERROR:`, JSON.stringify(ev.error || ev));
+            console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}) ERROR:`, JSON.stringify(ev.error || ev));
         }
-        if (ev.type === 'session.output_transcript.delta') {
-            // Dual-feed: each connection always outputs its own fixed
-            // language regardless of what was spoken (confirmed working by
-            // live test -- same-language passthrough is reliable). So there
-            // is no turn state, no detection, and no suppression: this
-            // feed's output always belongs in this feed's box.
+        if (ev.type === 'session.output_transcript.delta' && ev.delta) {
             broadcast(pipeline.sessionCode, broadcastLanguage, ev.delta);
-            // Only English goes to Zoom's native caption bar -- Zoom gives a
-            // meeting one caption token with no per-viewer language filter,
-            // so posting both interleaved them unreadably.
-            if (broadcastLanguage === 'english') {
-                queueZoomCaption(pipeline, ev.delta, 'en-US');
-            }
-        }
-        if (!['session.updated', 'error', 'session.output_transcript.delta'].includes(ev.type)) {
-            if (pipeline[wsKey + 'EventCount'] % 20 === 1) {
-                console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): other event type seen: ${ev.type}`);
-            }
         }
     });
 
-    ws.on('error', (err) => console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): WS error:`, err.message));
-    ws.on('close', (code, reason) => console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): closed. code=${code}`));
+    ws.on('error', (err) => console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}) WS error:`, err.message));
+    ws.on('close', (code) => console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): closed. code=${code}`));
+}
+
+// Translate a completed non-English transcript to English. This is deliberately
+// text-to-text: it gives us glossary control and avoids asking the speech
+// translation model to perform English -> English passthrough.
+async function translateTranscriptToEnglish(pipeline, transcript, sourceLanguage) {
+    const session = sessions[pipeline.sessionCode];
+    if (!session || !transcript || !transcript.trim()) return;
+
+    try {
+        const response = await fetch('https://api.openai.com/v1/responses', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${session.apiKey}`,
+                'Content-Type': 'application/json',
+                'OpenAI-Safety-Identifier': 'recovery-translator'
+            },
+            body: JSON.stringify({
+                model: 'gpt-5.4-mini',
+                instructions: `Translate live recovery-meeting speech into natural English captions.\n` +
+                    `Do not summarize, explain, censor, or add information. Preserve first-person voice and tone.\n` +
+                    `Return ONLY the English caption text.\n${RECOVERY_GLOSSARY}`,
+                input: `Source language: ${sourceLanguage || 'unknown'}\nTranscript: ${transcript}`,
+                max_output_tokens: 300
+            })
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            console.error(`RTMS/OpenAI [${pipeline.sessionCode}] text translation failed:`, JSON.stringify(data).slice(0, 1000));
+            return;
+        }
+
+        const english = (data.output || [])
+            .flatMap(item => item.content || [])
+            .filter(part => part.type === 'output_text')
+            .map(part => part.text || '')
+            .join('')
+            .trim();
+
+        if (english) {
+            broadcast(pipeline.sessionCode, 'english', english + ' ');
+            queueZoomCaption(pipeline, english, 'en-US');
+        }
+    } catch (err) {
+        console.error(`RTMS/OpenAI [${pipeline.sessionCode}] text translation error:`, err.message);
+    }
+}
+
+// Multilingual transcription is the canonical source for English captions.
+// gpt-transcribe is used rather than gpt-live-transcribe because completed
+// events include detected language(s), which lets us bypass translation for
+// English and invoke glossary-controlled text translation for other languages.
+function connectCaptionTranscriptionWs(pipeline) {
+    const apiKey = sessions[pipeline.sessionCode].apiKey;
+    const ws = new WebSocket('wss://api.openai.com/v1/realtime', {
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'OpenAI-Safety-Identifier': 'recovery-translator' }
+    });
+    pipeline.transcribeWs = ws;
+    pipeline.transcribeReady = false;
+
+    ws.on('open', () => {
+        console.log(`RTMS/OpenAI [${pipeline.sessionCode}] multilingual transcription: connected`);
+        ws.send(JSON.stringify({
+            type: 'session.update',
+            session: {
+                type: 'transcription',
+                audio: {
+                    input: {
+                        format: { type: 'audio/pcm', rate: 24000 },
+                        transcription: {
+                            model: 'gpt-transcribe',
+                            prompt: 'A live peer-recovery fellowship meeting. Transcribe exactly what the speaker says. Preserve recovery terminology, acronyms, names, Step/Tradition/Concept numbers, and code-switching.',
+                            keywords: RECOVERY_KEYWORDS,
+                            languages: ['en', 'es'],
+                        },
+                        // Semantic VAD is intentionally less eager here because
+                        // recovery shares often contain meaningful pauses.
+                        turn_detection: { type: 'semantic_vad', eagerness: 'low' }
+                    }
+                }
+            }
+        }));
+    });
+
+    ws.on('message', (raw) => {
+        let ev;
+        try { ev = JSON.parse(raw.toString()); } catch (e) { return; }
+
+        if (ev.type === 'session.updated') {
+            pipeline.transcribeReady = true;
+            console.log(`RTMS/OpenAI [${pipeline.sessionCode}] multilingual transcription: live`);
+            return;
+        }
+        if (ev.type === 'error') {
+            console.error(`RTMS/OpenAI [${pipeline.sessionCode}] transcription ERROR:`, JSON.stringify(ev.error || ev));
+            return;
+        }
+        if (ev.type !== 'conversation.item.input_audio_transcription.completed') return;
+
+        const transcript = (ev.transcript || '').trim();
+        if (!transcript) return;
+
+        const detected = Array.isArray(ev.languages) && ev.languages.length
+            ? ev.languages[0].code
+            : null;
+        console.log(`RTMS/OpenAI [${pipeline.sessionCode}] completed transcript language=${detected || 'unknown'}: ${transcript.slice(0, 160)}`);
+
+        if (detected === 'en' || detected === 'eng') {
+            broadcast(pipeline.sessionCode, 'english', transcript + ' ');
+            queueZoomCaption(pipeline, transcript, 'en-US');
+        } else {
+            // If language detection is uncertain, translating to English is the
+            // safer caption behavior: English text generally survives unchanged,
+            // while non-English text becomes usable for the room.
+            translateTranscriptToEnglish(pipeline, transcript, detected);
+        }
+    });
+
+    ws.on('error', (err) => console.error(`RTMS/OpenAI [${pipeline.sessionCode}] transcription WS error:`, err.message));
+    ws.on('close', (code) => console.log(`RTMS/OpenAI [${pipeline.sessionCode}] transcription closed. code=${code}`));
 }
 
 // Fetches the meeting's closed-caption token automatically so the host
@@ -661,7 +769,7 @@ const server = http.createServer((req, res) => {
                     if (pipeline.captionBuffers) {
                         Object.keys(pipeline.captionBuffers).forEach(lang => flushZoomCaption(pipeline, lang));
                     }
-                    if (pipeline.enWs) pipeline.enWs.close();
+                    if (pipeline.transcribeWs) pipeline.transcribeWs.close();
                     if (pipeline.esWs) pipeline.esWs.close();
                     rtmsCaptionPipelines.delete(streamId);
                     // Don't leave the panel pointing at a pipeline that no
@@ -705,21 +813,17 @@ const server = http.createServer((req, res) => {
 
                     const pipeline = {
                         sessionCode,
-                        enWs: null, enReady: false,
+                        transcribeWs: null, transcribeReady: false,
                         esWs: null, esReady: false,
                         zoomCaptionUrl: null,
                         captionSeq: 1
                     };
                     rtmsCaptionPipelines.set(streamId, pipeline);
 
-                    // Dual-feed architecture (validated by live test): two
-                    // always-on translate sessions, each locked to its own
-                    // OUTPUT language. Neither cares what language went in --
-                    // the English feed always emits English (translating
-                    // Spanish, passing through English), and the Spanish feed
-                    // always emits Spanish. No language detection, no manual
-                    // turn toggle, no commit timing. Both get identical audio.
-                    connectTranslateWs(pipeline, 'en', 'enWs', 'enReady', 'english');
+                    // Split pipeline:
+                    //   1) multilingual transcription -> canonical English captions
+                    //   2) realtime speech translation -> Spanish listener feed
+                    connectCaptionTranscriptionWs(pipeline);
                     connectTranslateWs(pipeline, 'es', 'esWs', 'esReady', 'spanish');
 
                     // Try to fetch the caption token automatically so the host
@@ -749,12 +853,17 @@ const server = http.createServer((req, res) => {
                             });
 
                             if (audioFrameCount % 250 === 1) {
-                                console.log(`RTMS [${pipeline.sessionCode}]: frame ${audioFrameCount}, enWs=${pipeline.enWs && pipeline.enWs.readyState}, esWs=${pipeline.esWs && pipeline.esWs.readyState}`);
+                                console.log(`RTMS [${pipeline.sessionCode}]: frame ${audioFrameCount}, transcribeWs=${pipeline.transcribeWs && pipeline.transcribeWs.readyState}, esWs=${pipeline.esWs && pipeline.esWs.readyState}`);
                             }
 
-                            // Identical audio to both feeds, always.
-                            if (pipeline.enWs && pipeline.enWs.readyState === WebSocket.OPEN) {
-                                pipeline.enWs.send(appendMsg);
+                            // The translation endpoint uses the session-prefixed
+                            // append event. The standard Realtime transcription
+                            // endpoint uses input_audio_buffer.append.
+                            if (pipeline.transcribeWs && pipeline.transcribeWs.readyState === WebSocket.OPEN) {
+                                pipeline.transcribeWs.send(JSON.stringify({
+                                    type: 'input_audio_buffer.append',
+                                    audio: resampled.toString('base64')
+                                }));
                             }
                             if (pipeline.esWs && pipeline.esWs.readyState === WebSocket.OPEN) {
                                 pipeline.esWs.send(appendMsg);
