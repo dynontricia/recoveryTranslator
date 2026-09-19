@@ -78,8 +78,8 @@ let zoomAccessToken = null;
 // produced a line break every couple of words. Buffer deltas per language
 // and flush on a natural boundary instead: either sentence-ending
 // punctuation, a max length, or a short pause in new text arriving.
-const CAPTION_FLUSH_PAUSE_MS = 1200;
-const CAPTION_MAX_CHARS = 180;
+const CAPTION_FLUSH_PAUSE_MS = 2200;
+const CAPTION_MAX_CHARS = 420;
 
 // Recovery-specific hints for speech recognition and text translation.
 // Keep these as literal terms/phrases likely to be spoken in meetings.
@@ -114,16 +114,16 @@ function queueZoomCaption(pipeline, text, lang) {
 
     const buffered = pipeline.captionBuffers[lang];
 
-    // Flush immediately on a sentence boundary or when the line gets long,
-    // so captions stay readable rather than growing unboundedly.
-    if (/[.!?¡¿]\s*$/.test(buffered) || buffered.length >= CAPTION_MAX_CHARS) {
+    // Do NOT flush at sentence punctuation. Every POST/sequence can cause Zoom
+    // to advance the native caption stream, so let Zoom wrap sentences within
+    // the same caption chunk. Only force a flush if the chunk becomes large.
+    if (buffered.length >= CAPTION_MAX_CHARS) {
         flushZoomCaption(pipeline, lang);
         return;
     }
 
-    // Otherwise flush after a brief pause in new text -- that's an utterance
-    // boundary in practice (speaker paused), which is where a line break
-    // actually belongs.
+    // Otherwise wait for a meaningful pause before advancing Zoom's caption
+    // sequence. This lets multiple sentences wrap naturally in the same block.
     if (pipeline.captionFlushTimers[lang]) clearTimeout(pipeline.captionFlushTimers[lang]);
     pipeline.captionFlushTimers[lang] = setTimeout(() => {
         flushZoomCaption(pipeline, lang);
@@ -227,7 +227,16 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
             console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}) ERROR:`, JSON.stringify(ev.error || ev));
         }
         if (ev.type === 'session.output_transcript.delta' && ev.delta) {
-            broadcast(pipeline.sessionCode, broadcastLanguage, ev.delta);
+            if (broadcastLanguage === 'english') {
+                // The English translator is always listening, but same-language
+                // English passthrough is unreliable. Hold its output until the
+                // transcription turn tells us the source was actually non-English.
+                pipeline.pendingEnglishTranslation =
+                    (pipeline.pendingEnglishTranslation || '') + ev.delta;
+                pipeline.pendingEnglishTranslationUpdatedAt = Date.now();
+            } else {
+                broadcast(pipeline.sessionCode, broadcastLanguage, ev.delta);
+            }
         }
     });
 
@@ -288,7 +297,7 @@ async function translateTranscriptToEnglish(pipeline, transcript, sourceLanguage
 // English and invoke glossary-controlled text translation for other languages.
 function connectCaptionTranscriptionWs(pipeline) {
     const apiKey = sessions[pipeline.sessionCode].apiKey;
-    const ws = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-realtime', {
+    const ws = new WebSocket('wss://api.openai.com/v1/realtime', {
         headers: { 'Authorization': `Bearer ${apiKey}`, 'OpenAI-Safety-Identifier': 'recovery-translator' }
     });
     pipeline.transcribeWs = ws;
@@ -308,13 +317,11 @@ function connectCaptionTranscriptionWs(pipeline) {
                             prompt: 'A live peer-recovery fellowship meeting. Transcribe exactly what the speaker says. Preserve recovery terminology, acronyms, names, Step/Tradition/Concept numbers, and code-switching.',
                             keywords: RECOVERY_KEYWORDS,
                             languages: ['en', 'es'],
+                            delay: 'low'
                         },
-                        turn_detection: {
-                            type: 'server_vad',
-                            threshold: 0.5,
-                            prefix_padding_ms: 300,
-                            silence_duration_ms: 600
-                        }
+                        // Captioning benefits from shorter turns. The transcription
+                        // model still gets recovery vocabulary/language hints above.
+                        turn_detection: { type: 'semantic_vad', eagerness: 'high' }
                     }
                 }
             }
@@ -345,13 +352,30 @@ function connectCaptionTranscriptionWs(pipeline) {
         console.log(`RTMS/OpenAI [${pipeline.sessionCode}] completed transcript language=${detected || 'unknown'}: ${transcript.slice(0, 160)}`);
 
         if (detected === 'en' || detected === 'eng') {
+            // For English speech, trust the transcript and throw away the
+            // English translator's same-language reconstruction.
+            pipeline.pendingEnglishTranslation = '';
             broadcast(pipeline.sessionCode, 'english', transcript + ' ');
             queueZoomCaption(pipeline, transcript, 'en-US');
+        } else if (detected) {
+            // For Spanish/non-English speech, use the continuously-running
+            // English speech translator. It is much better at cross-language
+            // translation than English->English passthrough.
+            const translated = (pipeline.pendingEnglishTranslation || '').trim();
+            pipeline.pendingEnglishTranslation = '';
+            if (translated) {
+                broadcast(pipeline.sessionCode, 'english', translated + ' ');
+                queueZoomCaption(pipeline, translated, 'en-US');
+            } else {
+                // Safety net if translation timing lags behind language detection.
+                translateTranscriptToEnglish(pipeline, transcript, detected);
+            }
         } else {
-            // If language detection is uncertain, translating to English is the
-            // safer caption behavior: English text generally survives unchanged,
-            // while non-English text becomes usable for the room.
-            translateTranscriptToEnglish(pipeline, transcript, detected);
+            // No confident language prediction: preserve the transcript rather
+            // than guessing and accidentally replacing valid English.
+            pipeline.pendingEnglishTranslation = '';
+            broadcast(pipeline.sessionCode, 'english', transcript + ' ');
+            queueZoomCaption(pipeline, transcript, 'en-US');
         }
     });
 
@@ -773,6 +797,7 @@ const server = http.createServer((req, res) => {
                         Object.keys(pipeline.captionBuffers).forEach(lang => flushZoomCaption(pipeline, lang));
                     }
                     if (pipeline.transcribeWs) pipeline.transcribeWs.close();
+                    if (pipeline.enWs) pipeline.enWs.close();
                     if (pipeline.esWs) pipeline.esWs.close();
                     rtmsCaptionPipelines.delete(streamId);
                     // Don't leave the panel pointing at a pipeline that no
@@ -817,7 +842,9 @@ const server = http.createServer((req, res) => {
                     const pipeline = {
                         sessionCode,
                         transcribeWs: null, transcribeReady: false,
+                        enWs: null, enReady: false,
                         esWs: null, esReady: false,
+                        pendingEnglishTranslation: '',
                         zoomCaptionUrl: null,
                         captionSeq: 1
                     };
@@ -827,6 +854,7 @@ const server = http.createServer((req, res) => {
                     //   1) multilingual transcription -> canonical English captions
                     //   2) realtime speech translation -> Spanish listener feed
                     connectCaptionTranscriptionWs(pipeline);
+                    connectTranslateWs(pipeline, 'en', 'enWs', 'enReady', 'english');
                     connectTranslateWs(pipeline, 'es', 'esWs', 'esReady', 'spanish');
 
                     // Try to fetch the caption token automatically so the host
@@ -867,6 +895,9 @@ const server = http.createServer((req, res) => {
                                     type: 'input_audio_buffer.append',
                                     audio: resampled.toString('base64')
                                 }));
+                            }
+                            if (pipeline.enWs && pipeline.enWs.readyState === WebSocket.OPEN) {
+                                pipeline.enWs.send(appendMsg);
                             }
                             if (pipeline.esWs && pipeline.esWs.readyState === WebSocket.OPEN) {
                                 pipeline.esWs.send(appendMsg);
