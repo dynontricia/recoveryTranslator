@@ -297,7 +297,7 @@ async function translateTranscriptToEnglish(pipeline, transcript, sourceLanguage
 // English and invoke glossary-controlled text translation for other languages.
 function connectCaptionTranscriptionWs(pipeline) {
     const apiKey = sessions[pipeline.sessionCode].apiKey;
-    const ws = new WebSocket('wss://api.openai.com/v1/realtime', {
+    const ws = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-realtime', {
         headers: { 'Authorization': `Bearer ${apiKey}`, 'OpenAI-Safety-Identifier': 'recovery-translator' }
     });
     pipeline.transcribeWs = ws;
@@ -395,6 +395,7 @@ async function fetchZoomCaptionUrl(pipeline, meetingUuid, accessToken) {
             headers: { 'Authorization': `Bearer ${accessToken}` }
         });
         const data = await res.json();
+        console.log(`RTMS [${pipeline.sessionCode}]: fetched caption token:`, data);
         if (res.ok && data.token) {
             pipeline.zoomCaptionUrl = data.token;
             console.log(`RTMS [${pipeline.sessionCode}]: caption token fetched automatically -- no manual paste needed`);
