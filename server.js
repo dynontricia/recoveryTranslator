@@ -333,12 +333,13 @@ function connectCaptionTranscriptionWs(pipeline) {
                         },
                         turn_detection: {
                             type: 'server_vad',
-                            threshold: 0.5,
+                            threshold: 0.1,
                             prefix_padding_ms: 300,
                             silence_duration_ms: 350
                         }
                     }
-                }
+                },
+                include: "item.input_audio_transcription.logprobs"
             }
         }));
     });
@@ -360,19 +361,21 @@ function connectCaptionTranscriptionWs(pipeline) {
 
         const transcript = (ev.transcript || '').trim();
         if (!transcript) return;
-
+        console.log(transcript)
         const detected = Array.isArray(ev.languages) && ev.languages.length
             ? ev.languages[0].code
             : null;
         console.log(`RTMS/OpenAI [${pipeline.sessionCode}] completed transcript language=${detected || 'unknown'}: ${transcript.slice(0, 160)}`);
-        let lngDet = franc.francAll( transcript, { only: ['eng', 'spa'] });
-        console.log('languageDetection: ', lngDet);
-        if (detected === 'en' || detected === 'eng') {
-            // For English speech, trust the transcript and throw away the
-            // English translator's same-language reconstruction.
-            pipeline.pendingEnglishTranslation = '';
-            broadcast(pipeline.sessionCode, 'english', transcript + ' ');
-            queueZoomCaption(pipeline, transcript, 'en-US');
+        if ((detected === 'en' || detected === 'eng')) {
+            let lngDet = franc.francAll( transcript, { only: ['eng', 'spa'] });
+            console.log('languageDetection: ', lngDet);
+            if(lngDet[0][0] === 'eng') {
+                pipeline.pendingEnglishTranslation = '';
+                broadcast(pipeline.sessionCode, 'english', transcript + ' ');
+                queueZoomCaption(pipeline, transcript, 'en-US');
+            } else {
+                translateTranscriptToEnglish(pipeline, transcript, detected);
+            }
         } else if (detected) {
             // For Spanish/non-English speech, use the continuously-running
             // English speech translator. It is much better at cross-language
