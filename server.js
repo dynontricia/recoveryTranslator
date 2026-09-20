@@ -3,6 +3,8 @@ const http = require('http');
 const fs = require('fs');
 const crypto = require('crypto');
 const WebSocket = require('ws');
+const LanguageDetect = require('languagedetect');
+const lngDetector = new LanguageDetect();
 
 // Safety net: an uncaught error anywhere -- especially from the native
 // @zoom/rtms package, which we don't fully control -- would otherwise crash
@@ -215,7 +217,16 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
 
     ws.on('open', () => {
         console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): connected`);
-        ws.send(JSON.stringify({ type: 'session.update', session: { audio: { output: { language: targetLanguage } } } }));
+        ws.send(JSON.stringify({
+            type: 'session.update',
+            session: {
+                audio: {
+                    output: {
+                        language: targetLanguage
+                    }
+                }
+            }
+        }));
     });
 
     ws.on('message', (raw) => {
@@ -355,7 +366,8 @@ function connectCaptionTranscriptionWs(pipeline) {
             ? ev.languages[0].code
             : null;
         console.log(`RTMS/OpenAI [${pipeline.sessionCode}] completed transcript language=${detected || 'unknown'}: ${transcript.slice(0, 160)}`);
-
+        let lngDet = lngDetector.detect(transcript, 3);
+        console.log('languageDetection: ', lngDet);
         if (detected === 'en' || detected === 'eng') {
             // For English speech, trust the transcript and throw away the
             // English translator's same-language reconstruction.
