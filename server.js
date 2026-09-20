@@ -237,7 +237,6 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
     ws.on('message', (raw) => {
         let ev;
         try { ev = JSON.parse(raw.toString()); } catch (e) { return; }
-        console.log(ev);
         console.log(ev.type, ev.delta);
         if (ev.type === 'session.updated') pipeline[readyKey] = true;
         if (ev.type === 'error') {
@@ -261,6 +260,7 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
             }
         }
         if (ev.type === 'session.input_transcript.delta' && ev.delta) {
+            console.log('input_transcript: ', ev);
             if (broadcastLanguage === 'english') {
                 // The English translator is always listening, but same-language
                 // English passthrough is unreliable. Hold its output until the
