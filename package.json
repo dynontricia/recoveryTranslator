@@ -13,7 +13,7 @@
   "dependencies": {
     "@zoom/rtms": "^1.1.0",
     "dotenv": "^17.4.2",
-    "languagedetect": "^2.0.0",
+    "franc-min": "^6.2.0",
     "node-microphone": "^0.2.0",
     "ws": "^8.21.0"
   }

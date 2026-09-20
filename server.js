@@ -3,8 +3,7 @@ const http = require('http');
 const fs = require('fs');
 const crypto = require('crypto');
 const WebSocket = require('ws');
-const LanguageDetect = require('languagedetect');
-const lngDetector = new LanguageDetect();
+const franc = require('franc-min');
 
 // Safety net: an uncaught error anywhere -- especially from the native
 // @zoom/rtms package, which we don't fully control -- would otherwise crash
@@ -366,7 +365,7 @@ function connectCaptionTranscriptionWs(pipeline) {
             ? ev.languages[0].code
             : null;
         console.log(`RTMS/OpenAI [${pipeline.sessionCode}] completed transcript language=${detected || 'unknown'}: ${transcript.slice(0, 160)}`);
-        let lngDet = lngDetector.detect(transcript, 3);
+        let lngDet = franc.francAll( transcript, { only: ['eng', 'spa'] });
         console.log('languageDetection: ', lngDet);
         if (detected === 'en' || detected === 'eng') {
             // For English speech, trust the transcript and throw away the
