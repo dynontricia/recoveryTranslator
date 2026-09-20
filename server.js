@@ -297,7 +297,7 @@ async function translateTranscriptToEnglish(pipeline, transcript, sourceLanguage
 // English and invoke glossary-controlled text translation for other languages.
 function connectCaptionTranscriptionWs(pipeline) {
     const apiKey = sessions[pipeline.sessionCode].apiKey;
-    const ws = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini', {
+    const ws = new WebSocket('wss://api.openai.com/v1/realtime?intent=transcription', {
         headers: { 'Authorization': `Bearer ${apiKey}`, 'OpenAI-Safety-Identifier': 'recovery-translator' }
     });
     pipeline.transcribeWs = ws;
@@ -308,7 +308,7 @@ function connectCaptionTranscriptionWs(pipeline) {
         ws.send(JSON.stringify({
             type: 'session.update',
             session: {
-                type: 'realtime',
+                type: 'transcription',
                 audio: {
                     input: {
                         format: {
@@ -913,13 +913,7 @@ const server = http.createServer((req, res) => {
                         }
                     });
 
-                    // Confirmed by a Zoom-filed bug report (zoom/rtms#92):
-                    // the SDK's DEFAULT audio format is compressed Opus at
-                    // 48kHz stereo -- not the simple L16/16kHz/mono raw PCM
-                    // the raw WebSocket protocol defaults to. Without this,
-                    // we were resampling compressed audio as if it were raw
-                    // PCM samples, producing garbage. Explicitly request the
-                    // format our pipeline is actually built for.
+                    // the SDK's DEFAULT audio format is compressed Opus at 48kHz stereo -- not the simple L16/16kHz/mono raw PCM
                     if (typeof client.setAudioParams === 'function') {
                         client.setAudioParams({
                             contentType: rtms.AudioContentType.RAW_AUDIO,
