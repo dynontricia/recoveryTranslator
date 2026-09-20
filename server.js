@@ -244,23 +244,38 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
             console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}) ERROR:`, JSON.stringify(ev.error || ev));
         }
         if (ev.type === 'session.output_transcript.delta' && ev.delta) {
+            if (broadcastLanguage === 'spanish') {
+                broadcast(pipeline.sessionCode, broadcastLanguage, ev.delta);
+
+                // The English translator is always listening, but same-language
+                // English passthrough is unreliable. Hold its output until the
+                // transcription turn tells us the source was actually non-English.
+                /*pipeline.pendingEnglishTranslation = (pipeline.pendingEnglishTranslation || '') + ev.delta;
+                pipeline.pendingEnglishTranslationUpdatedAt = Date.now();
+                if (pipeline.pendingEnglishTranslation.split(' ') > 4){
+                    broadcast(pipeline.sessionCode, broadcastLanguage, pipeline.pendingEnglishTranslation);
+                    pipeline.pendingEnglishTranslation = '';
+                    pipeline.pendingEnglishTranslationUpdatedAt = 0;
+                }
+            } else {*/
+            }
+        }
+        if (ev.type === 'session.input_transcript.delta' && ev.delta) {
             if (broadcastLanguage === 'english') {
                 // The English translator is always listening, but same-language
                 // English passthrough is unreliable. Hold its output until the
                 // transcription turn tells us the source was actually non-English.
-                pipeline.pendingEnglishTranslation =
-                    (pipeline.pendingEnglishTranslation || '') + ev.delta;
+                pipeline.pendingEnglishTranslation = (pipeline.pendingEnglishTranslation || '') + ev.delta;
                 pipeline.pendingEnglishTranslationUpdatedAt = Date.now();
-            } else {
-                broadcast(pipeline.sessionCode, broadcastLanguage, ev.delta);
-            }
-        }
-        if (ev.type === 'session.input_transcript.delta' && ev.delta) {
+                if (pipeline.pendingEnglishTranslation.split(' ') > 4){
+                    let detect = franc.francAll( pipeline.pendingEnglishTranslation, { only: ['eng', 'spa'] });
+                    if(detect[0][0] === 'eng') {
+                        broadcast(pipeline.sessionCode, broadcastLanguage, pipeline.pendingEnglishTranslation);
+                        pipeline.pendingEnglishTranslation = '';
+                        pipeline.pendingEnglishTranslationUpdatedAt = 0;
+                    }
 
-            if (broadcastLanguage === 'english') { (pipeline.pendingEnglishTranslation || '') + ev.delta;
-                pipeline.pendingEnglishTranslationUpdatedAt = Date.now();
-            } else {
-                broadcast(pipeline.sessionCode, broadcastLanguage, ev.delta);
+                }
             }
         }
     });
