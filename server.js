@@ -220,6 +220,12 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
             type: 'session.update',
             session: {
                 audio: {
+                    input: {
+                      transcription: {
+                          model: 'gpt-transcribe'
+                      },
+                      noise_reduction: null
+                    },
                     output: {
                         language: targetLanguage
                     }
@@ -231,7 +237,7 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
     ws.on('message', (raw) => {
         let ev;
         try { ev = JSON.parse(raw.toString()); } catch (e) { return; }
-
+        console.log(raw);
         if (ev.type === 'session.updated') pipeline[readyKey] = true;
         if (ev.type === 'error') {
             console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}) ERROR:`, JSON.stringify(ev.error || ev));
@@ -243,6 +249,14 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
                 // transcription turn tells us the source was actually non-English.
                 pipeline.pendingEnglishTranslation =
                     (pipeline.pendingEnglishTranslation || '') + ev.delta;
+                pipeline.pendingEnglishTranslationUpdatedAt = Date.now();
+            } else {
+                broadcast(pipeline.sessionCode, broadcastLanguage, ev.delta);
+            }
+        }
+        if (ev.type === 'session.input_transcript.delta' && ev.delta) {
+
+            if (broadcastLanguage === 'english') { (pipeline.pendingEnglishTranslation || '') + ev.delta;
                 pipeline.pendingEnglishTranslationUpdatedAt = Date.now();
             } else {
                 broadcast(pipeline.sessionCode, broadcastLanguage, ev.delta);
@@ -873,7 +887,7 @@ const server = http.createServer((req, res) => {
                     // Split pipeline:
                     //   1) multilingual transcription -> canonical English captions
                     //   2) realtime speech translation -> Spanish listener feed
-                    connectCaptionTranscriptionWs(pipeline);
+                    //connectCaptionTranscriptionWs(pipeline);
                     //connectTranslateWs(pipeline, 'en', 'enWs', 'enReady', 'english');
                     connectTranslateWs(pipeline, 'es', 'esWs', 'esReady', 'spanish');
 
