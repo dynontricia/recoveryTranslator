@@ -237,7 +237,8 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
     ws.on('message', (raw) => {
         let ev;
         try { ev = JSON.parse(raw.toString()); } catch (e) { return; }
-        console.log(raw);
+        console.log(ev);
+        console.log(ev.type, ev.delta);
         if (ev.type === 'session.updated') pipeline[readyKey] = true;
         if (ev.type === 'error') {
             console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}) ERROR:`, JSON.stringify(ev.error || ev));
