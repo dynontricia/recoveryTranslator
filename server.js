@@ -236,8 +236,8 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
 
     ws.on('message', (raw) => {
         let ev;
-        try { ev = JSON.parse(raw.toString()); } catch (e) { return; }
-        console.log(ev.type, ev.delta);
+        try { ev = JSON.parse(raw.toString()); console.log(ev.props);} catch (e) { return; }
+        console.log(ev.type);
         if (ev.type === 'session.updated') pipeline[readyKey] = true;
         if (ev.type === 'error') {
             console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}) ERROR:`, JSON.stringify(ev.error || ev));
@@ -267,6 +267,7 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
                 // transcription turn tells us the source was actually non-English.
                 pipeline.pendingEnglishTranslation = (pipeline.pendingEnglishTranslation || '') + ev.delta;
                 pipeline.pendingEnglishTranslationUpdatedAt = Date.now();
+                console.log('pendingEnglishTranslation: ', pipeline.pendingEnglishTranslation);
                 if (pipeline.pendingEnglishTranslation.split(' ') > 4){
                     let detect = franc.francAll( pipeline.pendingEnglishTranslation, { only: ['eng', 'spa'] });
                     if(detect[0][0] === 'eng') {
