@@ -874,7 +874,7 @@ const server = http.createServer((req, res) => {
                     //   1) multilingual transcription -> canonical English captions
                     //   2) realtime speech translation -> Spanish listener feed
                     connectCaptionTranscriptionWs(pipeline);
-                    connectTranslateWs(pipeline, 'en', 'enWs', 'enReady', 'english');
+                    //connectTranslateWs(pipeline, 'en', 'enWs', 'enReady', 'english');
                     connectTranslateWs(pipeline, 'es', 'esWs', 'esReady', 'spanish');
 
                     // Try to fetch the caption token automatically so the host
