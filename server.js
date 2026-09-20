@@ -339,7 +339,7 @@ function connectCaptionTranscriptionWs(pipeline) {
                         }
                     }
                 },
-                include: "item.input_audio_transcription.logprobs"
+                include: ["item.input_audio_transcription.logprobs"]
             }
         }));
     });
