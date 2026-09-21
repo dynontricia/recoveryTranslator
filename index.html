@@ -198,9 +198,15 @@
                 <option value="transcript_only">English captions only — no Spanish translation</option>
             </select>
 
-            <p class="small" style="margin-top:-10px;margin-bottom:20px;text-align:left">
-                English is captioned live for the room. Spanish attendees get a live Spanish translation.
-                When a Spanish speaker needs to address the room, use the toggle or approve their request.
+            <label>Audio input</label>
+            <select id="input-device">
+                <option value="">Default microphone</option>
+            </select>
+            <button class="link-btn" type="button" onclick="loadInputDevices()" style="margin:-8px 0 12px">Load audio devices (pick BlackHole to caption system audio)</button>
+
+            <p class="small" style="margin-top:4px;margin-bottom:20px;text-align:left">
+                English is captioned live for the room, and Spanish attendees get a live Spanish translation.
+                Both run the whole time — no need to switch when someone speaks Spanish.
             </p>
             <button class="btn btn-primary" onclick="createSession()">Start session</button>
             <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
@@ -222,16 +228,9 @@
 
                     <hr class="divider"/>
 
-                    <div class="bilingual-only">
-                        <div class="turn-indicator" id="turn-indicator">
-                            🎤 Spanish speaker has the floor — English box shows the live translation.
-                        </div>
-                        <button class="btn btn-success" id="spanish-toggle" onclick="toggleSpanishTurn()">🎤 Spanish speaker (switch)</button>
-
-                        <h2 style="margin-top:8px">Speak requests</h2>
-                        <div class="speak-queue" id="speak-queue">
-                            <p style="font-size:14px;color:#718096">No pending requests.</p>
-                        </div>
+                    <div class="small" id="leader-audio-status" style="text-align:left">Microphone: starting…</div>
+                    <div class="meter" style="height:8px;background:#e2e8f0;border-radius:4px;margin:8px 0 4px;overflow:hidden">
+                        <div id="leader-level" style="height:100%;width:0;background:#38a169;transition:width .08s"></div>
                     </div>
 
                     <hr class="divider"/>
@@ -279,17 +278,11 @@
         <div class="card">
             <div class="status-bar"><span class="status-dot"></span><span id="listener-status">Connected</span></div>
 
-            <div class="notice" id="listener-notice">
-                🔊 A Spanish speaker has the floor.<br>Please listen to the room audio.
-            </div>
-
             <div class="caption-box" id="caption-box"></div>
 
             <button class="btn btn-secondary" id="audio-toggle-btn" onclick="toggleAudio()">🔊 Hear translation</button>
             <p class="small" id="audio-status"></p>
 
-            <button class="btn btn-secondary" id="speak-btn" style="display:none" onclick="requestSpeak()">🎙 Request to speak</button>
-            <p class="small" id="speak-status"></p>
         </div>
     </div>
 </div>
@@ -370,63 +363,75 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
+    // ── Architecture ─────────────────────────────────────
+    // Everything goes through the server over a WebSocket -- the same
+    // pipeline Zoom RTMS feeds. The leader's browser only CAPTURES audio
+    // (16kHz mono PCM16, 20ms frames, the RTMS shape) and streams it up.
+    // All OpenAI work, language detection, and translation happen on the
+    // server, so one set of server logs shows everything, locally or deployed.
+
     // ── Shared state ─────────────────────────────────────
     let sessionCode = null, listenerLanguage = null, currentRole = null;
     let signalingWs = null, eventSource = null;
-
-    // Leader state
-    let micStream = null;
-    let pcBase = null;   // baseline session, output: es  (translation only now)
-    let pcTurn = null;   // on-demand session, output: en (used during a Spanish turn)
-    let pcTranscribe = null, transcriptionDc = null; // dedicated English transcription
-    let spanishTurn = false;
     let sessionMode = 'bilingual'; // 'bilingual' | 'transcript_only'
-    let remoteTrackES = null;                // baseline translated (Spanish) audio, for "hear translation"
-    let warmSinkEl = null;
 
-    // A received remote WebRTC track appears to stay dormant (no real audio
-    // decoded, even though it reports "live"/"unmuted") until it's attached
-    // to an actual playback sink somewhere on this page -- confirmed by
-    // testing: forwarding it to a listener alone produced silence, but as
-    // soon as it was also played locally, both the local AND the relayed
-    // copies started working. This keeps that sink attached automatically,
-    // silently, the instant the track arrives -- no button press required.
-    function keepTrackWarm(track) {
-        if (!warmSinkEl) {
-            warmSinkEl = document.createElement('audio');
-            warmSinkEl.autoplay = true;
-            warmSinkEl.muted = true; // silent on the leader's own device
-            document.body.appendChild(warmSinkEl);
+    // Leader: audio capture + the leader's own caption subscriptions
+    let micStream = null, captureCtx = null, leaderLive = false;
+    let leaderEnSource = null, leaderEsSource = null;
+
+    // Listener: translated-audio playback
+    let listenerId = null, listenerEnded = false;
+    let playCtx = null, playHead = 0, audioOn = false;
+
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+
+    // Runs on the audio thread. Converts the device rate (usually 44.1/48kHz)
+    // to 16kHz mono PCM16 and posts 20ms frames (320 samples = 640 bytes).
+    const WORKLET_SRC = `
+    class RtmsShaper extends AudioWorkletProcessor {
+        constructor() {
+            super();
+            this.ratio = sampleRate / 16000;
+            this.pos = 0;
+            this.out = new Int16Array(320);
+            this.n = 0;
+            this.peak = 0;
         }
-        warmSinkEl.srcObject = new MediaStream([track]);
-        warmSinkEl.play().catch(() => {}); // muted autoplay is never blocked
+        process(inputs) {
+            const ch = inputs[0] && inputs[0][0];
+            if (!ch) return true;
+            while (this.pos < ch.length) {
+                const i = Math.floor(this.pos), f = this.pos - i;
+                const a = ch[i], b = i + 1 < ch.length ? ch[i + 1] : a;
+                let s = a + (b - a) * f;
+                s = Math.max(-1, Math.min(1, s));
+                this.peak = Math.max(this.peak, Math.abs(s));
+                this.out[this.n++] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                if (this.n === 320) {
+                    this.port.postMessage({ frame: this.out.buffer, peak: this.peak }, [this.out.buffer]);
+                    this.out = new Int16Array(320);
+                    this.n = 0;
+                    this.peak = 0;
+                }
+                this.pos += this.ratio;
+            }
+            this.pos -= ch.length;
+            return true;
+        }
     }
+    registerProcessor('rtms-shaper', RtmsShaper);`;
 
-    let audioRelayPCs = {};                  // listenerId -> RTCPeerConnection
-
-    // Listener state
-    let listenerId = null, audioRelayPc = null, audioEl = null;
-
-    const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
-
-    // Debug logging: tags each OpenAI event with which session it came from
-    // ('es' = baseline session, 'en' = the on-demand Spanish-turn session).
     function show(id) {
         document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
         document.getElementById(id).classList.add('active');
     }
     function showError(id, msg) { const el = document.getElementById(id); el.textContent = msg; el.style.display = 'block'; }
     function hideError(id) { document.getElementById(id).style.display = 'none'; }
-
-    function writeCaption(boxId, language, delta) {
-        const box = document.getElementById(boxId);
-        if (box) { box.innerText += delta; box.scrollTop = box.scrollHeight; }
-        if (signalingWs && signalingWs.readyState === WebSocket.OPEN) {
-            signalingWs.send(JSON.stringify({ type: 'transcript', language, delta }));
-        }
+    function wsUrl(query) {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${proto}//${location.host}?${query}`;
     }
 
-    // Resume-state (reconnect after a backgrounded tab)
     async function checkSessionModeForJoin() {
         const code = document.getElementById('session-code-input').value.trim();
         const spanishOption = document.getElementById('listener-language-spanish');
@@ -449,8 +454,26 @@
     function getResumeState() { try { return JSON.parse(localStorage.getItem('rt-session')); } catch(e){ return null; } }
 
     // ── LEADER ──────────────────────────────────────────
+    async function loadInputDevices() {
+        try {
+            // Device labels only appear after permission is granted once.
+            const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+            tmp.getTracks().forEach(t => t.stop());
+            const inputs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
+            const select = document.getElementById('input-device');
+            select.innerHTML = '<option value="">Default microphone</option>' +
+                inputs.map(d => `<option value="${d.deviceId}">${d.label || 'Unnamed input'}</option>`).join('');
+        } catch (err) {
+            showError('leader-error', 'Could not list audio devices: ' + err.message);
+        }
+    }
+
     async function createSession() {
         hideError('leader-error');
+        // Create the capture context NOW, inside the click. Browsers only let
+        // an AudioContext run if it was created during a user gesture, and
+        // by the time the awaits below finish, that gesture has expired.
+        if (!captureCtx) captureCtx = new AudioCtx();
         const accessCode = document.getElementById('access-code').value.trim();
         let apiKey = document.getElementById('api-key').value.trim();
         const micDistance = document.getElementById('mic-distance').value;
@@ -468,7 +491,7 @@
             sessionMode = mode;
             saveResumeState({ role: 'leader', sessionCode });
             await startLeaderSession(sessionCode);
-        } catch (err) { showError('leader-error', 'Could not connect to server.'); }
+        } catch (err) { showError('leader-error', 'Could not start the session: ' + err.message); }
     }
 
     async function startLeaderSession(code) {
@@ -480,314 +503,118 @@
         new QRCode(document.getElementById('qr-container'), { text: url, width: 180, height: 180 });
         document.getElementById('caption-box-en').textContent = '';
         document.getElementById('caption-box-es').textContent = '';
-
         document.getElementById('screen-leader-live')
             .classList.toggle('mode-transcript-only', sessionMode === 'transcript_only');
 
+        leaderLive = true;
+        subscribeLeaderCaptions(code);
         openLeaderSignaling(code);
-        micStream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true, channelCount: 1 }
-        });
-        /*if (sessionMode === 'transcript_only') {
-            await startTranscription(code); // English captions only -- no Spanish translation session
-        } else {
-            await Promise.all([startBaseline(code), startTranscription(code)]);
-        }*/
         show('screen-leader-live');
+        try {
+            await startLeaderAudio();
+        } catch (err) {
+            setLeaderAudioStatus('Microphone failed: ' + err.message, true);
+        }
+    }
+
+    // The leader's boxes show exactly what the server broadcasts -- the same
+    // feed listeners and the display page get. No separate leader-only path.
+    function subscribeLeaderCaptions(code) {
+        if (leaderEnSource) leaderEnSource.close();
+        if (leaderEsSource) leaderEsSource.close();
+        const attach = (lang, boxId) => {
+            const src = new EventSource(`/stream/${code}/${lang}`);
+            src.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                if (!data.text) return;
+                const box = document.getElementById(boxId);
+                box.innerText += data.text;
+                box.scrollTop = box.scrollHeight;
+            };
+            return src;
+        };
+        leaderEnSource = attach('english', 'caption-box-en');
+        leaderEsSource = sessionMode === 'transcript_only' ? null : attach('spanish', 'caption-box-es');
     }
 
     function openLeaderSignaling(code) {
-        const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        signalingWs = new WebSocket(`${wsProtocol}//${location.host}?session=${code}&role=leader`);
-        signalingWs.onmessage = async (event) => {
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'speak_request') addQueueItem(msg.id, msg.language);
-            if (msg.type === 'request_audio') await startAudioRelay(msg.listenerId, msg.language);
-            if (msg.type === 'stop_audio') stopAudioRelay(msg.listenerId);
-            if (msg.type === 'audio_answer') {
-                const pc = audioRelayPCs[msg.listenerId];
-                if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
-            }
-            if (msg.type === 'audio_ice') {
-                const pc = audioRelayPCs[msg.listenerId];
-                if (pc && msg.candidate) { try { await pc.addIceCandidate(msg.candidate); } catch(e){} }
-            }
+        signalingWs = new WebSocket(wsUrl(`session=${code}&role=leader`));
+        signalingWs.binaryType = 'arraybuffer';
+        signalingWs.onclose = () => {
+            // The server keeps the pipeline alive for 60s, so reconnecting
+            // quickly resumes the same session without losing anything.
+            if (!leaderLive) return;
+            setLeaderAudioStatus('Connection lost — reconnecting…', true);
+            setTimeout(() => { if (leaderLive) openLeaderSignaling(code); }, 2000);
         };
     }
 
-    // Baseline session: output Spanish. Purely a translator now -- English
-    // source captions come from the dedicated transcription session below.
-    async function startBaseline(code) {
-        pcBase = await connectSession(code, 'es', (oaiEvent) => {
-            if (spanishTurn) return; // held while a Spanish speaker has the floor
-            if (oaiEvent.type === 'session.output_transcript.delta') {
-                writeCaption('caption-box-es', 'spanish', oaiEvent.delta);
+    function setLeaderAudioStatus(text, isErr) {
+        const el = document.getElementById('leader-audio-status');
+        el.textContent = text;
+        el.style.color = isErr ? '#c53030' : '';
+    }
+
+    async function startLeaderAudio() {
+        const select = document.getElementById('input-device');
+        const deviceId = select.value;
+        const label = select.options[select.selectedIndex] ? select.options[select.selectedIndex].text : '';
+        // Voice processing helps a real mic but mangles loopback/system audio.
+        const isLoopback = /blackhole|cable output|loopback/i.test(label);
+        micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                deviceId: deviceId ? { exact: deviceId } : undefined,
+                echoCancellation: !isLoopback, noiseSuppression: false, autoGainControl: !isLoopback,
+                channelCount: 1
             }
-        }, (track) => {
-            remoteTrackES = track;
-            keepTrackWarm(track);
         });
-    }
 
-    // On-demand session for a Spanish turn: output English. Its
-    // output_transcript is the English translation of the Spanish being
-    // spoken (-> English box). Nothing else is printed.
-    async function startTurnSession(code) {
-        pcTurn = await connectSession(code, 'en', (oaiEvent) => {
-            if (oaiEvent.type === 'session.output_transcript.delta') {
-                writeCaption('caption-box-en', 'english', oaiEvent.delta);
-            }
-        }, null);
-    }
+        if (!captureCtx) captureCtx = new AudioCtx();
+        await captureCtx.resume();
+        const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'application/javascript' }));
+        await captureCtx.audioWorklet.addModule(url);
 
-    // Dedicated transcription session: gpt-realtime-whisper, delay: high, no
-    // VAD (manual commit only). Streams continuously with NO periodic commit
-    // loop -- deltas flow live on their own. We only send an explicit commit
-    // at the two moments that matter: starting a Spanish turn (flush the
-    // English tail so nothing is cut off mid-word) and ending one (discard
-    // whatever this session absorbed while Spanish was being spoken, and
-    // resume live). transcriptionMode gates what happens to incoming text:
-    //   'live'               -> print deltas normally (default state)
-    //   'flushing-for-turn'  -> still print deltas (the in-flight tail),
-    //                           until 'completed' fires, then insert a line
-    //                           break and hold
-    //   'held'               -> swallow deltas silently (Spanish is being
-    //                           spoken; this session mishears it as English)
-    //   'flushing-for-resume'-> swallow deltas until 'completed' fires
-    //                           (discard the garbage), then insert a line
-    //                           break and return to 'live'
-    let transcriptionMode = 'live';
-    let transcriptionPauseTimer = null;
-    let awaitingSegmentBoundarySpace = false;
-    const TRANSCRIPTION_PAUSE_COMMIT_MS = 2500;
+        const source = captureCtx.createMediaStreamSource(micStream);
+        const shaper = new AudioWorkletNode(captureCtx, 'rtms-shaper');
+        // Route through a silent gain to the output so the browser keeps
+        // pulling audio through the worklet, without playing it back.
+        const mute = captureCtx.createGain();
+        mute.gain.value = 0;
+        source.connect(shaper).connect(mute).connect(captureCtx.destination);
 
-    async function startTranscription(code) {
-        const res = await fetch('/session/transcription-secret', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionCode: code })
-        });
-        const secret = (await res.json()).value;
-
-        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-        pc.addTrack(micStream.getAudioTracks()[0].clone(), micStream);
-
-        const dc = pc.createDataChannel('oai-events');
-        dc.onmessage = (e) => handleTranscriptionEvent(JSON.parse(e.data));
-
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        const sdpRes = await fetch('https://api.openai.com/v1/realtime/calls', {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${secret}`, 'Content-Type': 'application/sdp' },
-            body: offer.sdp
-        });
-        await pc.setRemoteDescription({ type: 'answer', sdp: await sdpRes.text() });
-
-        pcTranscribe = pc;
-        transcriptionDc = dc;
-    }
-
-    function handleTranscriptionEvent(ev) {
-        if (ev.type === 'conversation.item.input_audio_transcription.delta') {
-            if (transcriptionMode === 'live' || transcriptionMode === 'flushing-for-turn') {
-                let delta = ev.delta;
-                // A fresh segment after a pause-triggered commit is treated by
-                // the model as the start of new output, so its first delta has
-                // no reason to carry a leading space -- without this guard it
-                // glues onto whatever text came before the pause.
-                if (awaitingSegmentBoundarySpace && transcriptionMode === 'live') {
-                    delta = ' ' + delta;
-                    awaitingSegmentBoundarySpace = false;
+        let framesSent = 0;
+        setLeaderAudioStatus(`${label || 'Microphone'}: streaming`);
+        shaper.port.onmessage = (e) => {
+            document.getElementById('leader-level').style.width = Math.min(100, e.data.peak * 140) + '%';
+            if (signalingWs && signalingWs.readyState === WebSocket.OPEN) {
+                signalingWs.send(e.data.frame);
+                if (++framesSent % 250 === 0) {
+                    setLeaderAudioStatus(`${label || 'Microphone'}: streaming · ${Math.round(framesSent * 0.02)}s sent`);
                 }
-                writeCaption('caption-box-en', 'english', delta);
-            }
-            // 'held' and 'flushing-for-resume': swallow silently
-
-            // Bound the buffer: whisper's transcription session never auto-
-            // segments (no VAD), and we don't commit on a timer either (that
-            // caused mid-word chopping). Instead, commit only after a real
-            // pause in speech -- if no new text has arrived for a couple
-            // seconds, that's a natural sentence boundary, safe to flush.
-            // Without this, the buffer grows unboundedly for the whole
-            // meeting, which likely explains thinner coverage over time.
-            if (transcriptionMode === 'live') {
-                if (transcriptionPauseTimer) clearTimeout(transcriptionPauseTimer);
-                transcriptionPauseTimer = setTimeout(() => {
-                    if (transcriptionMode === 'live') {
-                        commitTranscription();
-                        awaitingSegmentBoundarySpace = true;
-                    }
-                }, TRANSCRIPTION_PAUSE_COMMIT_MS);
-            }
-        }
-
-        if (ev.type === 'conversation.item.input_audio_transcription.completed') {
-            if (transcriptionMode === 'flushing-for-turn') {
-                writeCaption('caption-box-en', 'english', '\n\n');
-                transcriptionMode = 'held';
-            } else if (transcriptionMode === 'flushing-for-resume') {
-                writeCaption('caption-box-en', 'english', '\n\n');
-                transcriptionMode = 'live';
-            }
-            // else: a routine pause-triggered commit finished -- nothing to do,
-            // deltas for the next segment will keep appending normally.
-        }
-
-        // Safety net: an empty-buffer commit (e.g. toggled with no speech yet)
-        // returns an error instead of completed. Don't get stuck waiting.
-        if (ev.type === 'error') {
-            if (transcriptionMode === 'flushing-for-turn') transcriptionMode = 'held';
-            else if (transcriptionMode === 'flushing-for-resume') transcriptionMode = 'live';
-        }
-    }
-
-    function commitTranscription() {
-        if (transcriptionDc && transcriptionDc.readyState === 'open') {
-            transcriptionDc.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-        } else {
-            // No channel available -- fail safe rather than hang in a
-            // flushing state forever.
-            if (transcriptionMode === 'flushing-for-turn') transcriptionMode = 'held';
-            else if (transcriptionMode === 'flushing-for-resume') transcriptionMode = 'live';
-        }
-    }
-
-    // Shared connector: opens one translation session to OpenAI over WebRTC.
-    async function connectSession(code, targetLanguage, onEvent, onTrack) {
-        const res = await fetch('/session/client-secret', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionCode: code, targetLanguage })
-        });
-        const secret = (await res.json()).value;
-
-        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-        // Clone the track per connection -- sharing one MediaStreamTrack object
-        // across multiple peer connections can cause inconsistent preprocessing
-        // and sync issues between the two sessions.
-        pc.addTrack(micStream.getAudioTracks()[0].clone(), micStream);
-        if (onTrack) pc.ontrack = (e) => onTrack(e.track);
-
-        const dc = pc.createDataChannel('oai-events');
-        dc.onmessage = (e) => onEvent(JSON.parse(e.data));
-
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        const sdpRes = await fetch('https://api.openai.com/v1/realtime/translations/calls', {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${secret}`, 'Content-Type': 'application/sdp' },
-            body: offer.sdp
-        });
-        await pc.setRemoteDescription({ type: 'answer', sdp: await sdpRes.text() });
-        return pc;
-    }
-
-    // Both the toggle and an approved queue request funnel through here.
-    async function beginSpanishTurn() {
-        if (spanishTurn) return;
-        spanishTurn = true;
-        document.getElementById('turn-indicator').classList.add('active');
-        document.getElementById('spanish-toggle').textContent = '◀ Return to main session';
-        signalingWs.send(JSON.stringify({ type: 'spanish_turn', active: true }));
-        // Flush the transcription session's in-flight English tail before we
-        // stop displaying it -- commit, keep printing until 'completed', then
-        // a line break and hold (see handleTranscriptionEvent).
-        if (transcriptionPauseTimer) { clearTimeout(transcriptionPauseTimer); transcriptionPauseTimer = null; }
-        transcriptionMode = 'flushing-for-turn';
-        commitTranscription();
-        await startTurnSession(sessionCode);
-    }
-    function endSpanishTurn() {
-        if (!spanishTurn) return;
-        spanishTurn = false;
-        document.getElementById('turn-indicator').classList.remove('active');
-        document.getElementById('spanish-toggle').textContent = '🎤 Spanish speaker (switch)';
-        signalingWs.send(JSON.stringify({ type: 'spanish_turn', active: false }));
-        if (pcTurn) { pcTurn.close(); pcTurn = null; }
-        // Discard whatever the transcription session absorbed while Spanish
-        // was being spoken (it was mishearing it as English), then resume live.
-        transcriptionMode = 'flushing-for-resume';
-        commitTranscription();
-    }
-    function toggleSpanishTurn() { spanishTurn ? endSpanishTurn() : beginSpanishTurn(); }
-
-    function addQueueItem(id, language) {
-        const queue = document.getElementById('speak-queue');
-        if (queue.querySelector('p')) queue.innerHTML = '';
-        const item = document.createElement('div');
-        item.className = 'queue-item';
-        item.id = `queue-${id}`;
-        item.innerHTML = `<span><span class="badge">${language}</span>Wants to speak</span>
-            <span><button class="btn btn-success btn-sm" onclick="approveSpeak('${id}')">Approve</button>
-            <button class="btn btn-danger btn-sm" onclick="denySpeak('${id}')">Deny</button></span>`;
-        queue.appendChild(item);
-    }
-    function clearQueueItem(id) {
-        document.getElementById(`queue-${id}`)?.remove();
-        if (!document.getElementById('speak-queue').children.length) {
-            document.getElementById('speak-queue').innerHTML = '<p style="font-size:14px;color:#718096">No pending requests.</p>';
-        }
-    }
-    async function approveSpeak(id) {
-        signalingWs.send(JSON.stringify({ type: 'approve', id }));
-        clearQueueItem(id);
-        await beginSpanishTurn();
-    }
-    function denySpeak(id) {
-        signalingWs.send(JSON.stringify({ type: 'deny', id }));
-        clearQueueItem(id);
-    }
-
-    // Isolation test: plays remoteTrackES (the raw audio OpenAI returned)
-    // directly on THIS device, with no relay/listener involved at all. If
-    // this is also silent despite a successful play(), the track itself has
-    // no real speech content and the fix is on the OpenAI session config,
-    // not the relay or the listener's phone. If this DOES play audibly, the
-    // problem is specific to the listener's device (volume/mute switch).
-    async function startAudioRelay(listenerId, language) {
-        const track = remoteTrackES; // baseline Spanish translation audio
-        if (!track) return;
-        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-        audioRelayPCs[listenerId] = pc;
-        // Wrap in a MediaStream explicitly -- addTrack(track) alone doesn't
-        // guarantee the receiving side's ontrack.streams array is populated,
-        // and an empty streams array means the listener has nothing to hand
-        // to its <audio> element even though the connection itself is fine.
-        pc.addTrack(track, new MediaStream([track]));
-        pc.onicecandidate = (e) => {
-            if (e.candidate && signalingWs.readyState === WebSocket.OPEN) {
-                signalingWs.send(JSON.stringify({ type: 'audio_ice', listenerId, candidate: e.candidate }));
             }
         };
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        signalingWs.send(JSON.stringify({ type: 'audio_offer', listenerId, sdp: offer.sdp }));
-    }
-    function stopAudioRelay(listenerId) {
-        const pc = audioRelayPCs[listenerId];
-        if (pc) { pc.close(); delete audioRelayPCs[listenerId]; }
     }
 
     function openDisplay() { window.open(`/display?session=${sessionCode}`, '_blank'); }
     function openTranscript() { window.open(`/transcript?session=${sessionCode}`, '_blank', 'width=700,height=900'); }
 
     function endSession() {
-        if (signalingWs) signalingWs.send(JSON.stringify({ type: 'end_session' }));
+        if (signalingWs && signalingWs.readyState === WebSocket.OPEN) {
+            signalingWs.send(JSON.stringify({ type: 'end_session' }));
+        }
         teardownLeader();
         clearResumeState();
         show('screen-landing');
     }
+
     function teardownLeader() {
-        if (signalingWs) { signalingWs.close(); signalingWs = null; }
-        if (pcBase) { pcBase.close(); pcBase = null; }
-        if (pcTurn) { pcTurn.close(); pcTurn = null; }
-        if (pcTranscribe) { pcTranscribe.close(); pcTranscribe = null; transcriptionDc = null; }
-        Object.values(audioRelayPCs).forEach(pc => pc.close());
-        audioRelayPCs = {};
+        leaderLive = false; // stops the auto-reconnect
+        if (signalingWs) { signalingWs.onclose = null; signalingWs.close(); signalingWs = null; }
+        if (captureCtx) { captureCtx.close(); captureCtx = null; }
         if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
-        spanishTurn = false;
-        transcriptionMode = 'live';
-        awaitingSegmentBoundarySpace = false;
-        if (transcriptionPauseTimer) { clearTimeout(transcriptionPauseTimer); transcriptionPauseTimer = null; }
+        if (leaderEnSource) { leaderEnSource.close(); leaderEnSource = null; }
+        if (leaderEsSource) { leaderEsSource.close(); leaderEsSource = null; }
+        document.getElementById('leader-level').style.width = '0';
     }
 
     // ── LISTENER ─────────────────────────────────────────
@@ -803,176 +630,122 @@
 
     function startListenerSession(code, language) {
         currentRole = 'listener'; sessionCode = code; listenerLanguage = language;
+        listenerEnded = false;
         const box = document.getElementById('caption-box');
         box.textContent = ''; box.style.display = ''; box.style.color = ''; box.style.fontSize = '20px';
-
-        // Request-to-speak is only for Spanish (secondary-language) attendees.
-        document.getElementById('speak-btn').style.display = (language === 'spanish') ? 'block' : 'none';
 
         if (eventSource) eventSource.close();
         eventSource = new EventSource(`/stream/${code}/${language}`);
         eventSource.onmessage = (e) => {
             const data = JSON.parse(e.data);
-
             if (data.type === 'session_ended') {
-                eventSource.close();
-                if (signalingWs) signalingWs.close();
-                if (audioRelayPc) { audioRelayPc.close(); audioRelayPc = null; }
-                clearResumeState();
-                const b = document.getElementById('caption-box');
-                b.style.display = 'flex'; b.style.alignItems = 'center'; b.style.justifyContent = 'center';
-                b.style.color = '#718096'; b.style.fontSize = '18px';
-                b.innerText = 'This session has ended. Thank you!';
-                document.getElementById('listener-status').textContent = 'Session ended';
-                document.getElementById('audio-toggle-btn').style.display = 'none';
-                document.getElementById('speak-btn').style.display = 'none';
-                document.getElementById('listener-notice').classList.remove('active');
+                endListenerSession();
                 return;
             }
-
-            // Spanish-turn notification: only Spanish listeners hold captions.
-            if (data.type === 'spanish_turn') {
-                if (listenerLanguage === 'spanish') {
-                    document.getElementById('listener-notice').classList.toggle('active', data.active);
-                }
-                return;
-            }
-
             if (!data.text) return;
-            const b = document.getElementById('caption-box');
-            b.innerText += data.text; b.scrollTop = b.scrollHeight;
+            box.innerText += data.text; box.scrollTop = box.scrollHeight;
         };
         eventSource.onerror = () => { document.getElementById('listener-status').textContent = 'Reconnecting...'; };
         eventSource.onopen = () => { document.getElementById('listener-status').textContent = 'Connected'; };
 
+        // Translated audio exists only for the Spanish feed.
         document.getElementById('audio-toggle-btn').style.display = (language === 'spanish') ? '' : 'none';
         openListenerSignaling(code, language);
         show('screen-listener-live');
     }
 
+    function endListenerSession() {
+        listenerEnded = true;
+        if (eventSource) eventSource.close();
+        stopAudioPlayback();
+        if (signalingWs) { signalingWs.onclose = null; signalingWs.close(); signalingWs = null; }
+        clearResumeState();
+        const b = document.getElementById('caption-box');
+        b.style.display = 'flex'; b.style.alignItems = 'center'; b.style.justifyContent = 'center';
+        b.style.color = '#718096'; b.style.fontSize = '18px';
+        b.innerText = 'This session has ended. Thank you!';
+        document.getElementById('listener-status').textContent = 'Session ended';
+        document.getElementById('audio-toggle-btn').style.display = 'none';
+    }
+
     function openListenerSignaling(code, language) {
-        const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        signalingWs = new WebSocket(`${wsProtocol}//${location.host}?session=${code}&role=listener&language=${language}`);
-        signalingWs.onmessage = async (event) => {
+        signalingWs = new WebSocket(wsUrl(`session=${code}&role=listener&language=${language}`));
+        signalingWs.binaryType = 'arraybuffer';
+        signalingWs.onopen = () => {
+            // After a reconnect, the server doesn't remember we wanted audio.
+            if (audioOn) signalingWs.send(JSON.stringify({ type: 'request_audio' }));
+        };
+        signalingWs.onmessage = (event) => {
+            if (event.data instanceof ArrayBuffer) { playTranslatedAudio(event.data); return; }
             const msg = JSON.parse(event.data);
             if (msg.type === 'welcome') listenerId = msg.listenerId;
-            if (msg.type === 'approved') {
-                document.getElementById('speak-status').textContent = 'Approved — please go to the microphone and speak.';
-                document.getElementById('speak-btn').textContent = '🎙 Request to speak';
-                document.getElementById('speak-btn').disabled = false;
-            }
-            if (msg.type === 'denied') {
-                document.getElementById('speak-status').textContent = 'Request was not approved.';
-                document.getElementById('speak-btn').disabled = false;
-            }
-            if (msg.type === 'audio_offer') await acceptAudioOffer(msg.sdp);
-            if (msg.type === 'audio_ice') {
-                if (audioRelayPc && msg.candidate) { try { await audioRelayPc.addIceCandidate(msg.candidate); } catch(e){} }
-            }
         };
-    }
-
-    function requestSpeak() {
-        if (!signalingWs || signalingWs.readyState !== WebSocket.OPEN) return;
-        signalingWs.send(JSON.stringify({ type: 'request_speak' }));
-        document.getElementById('speak-status').textContent = 'Request sent — waiting for approval...';
-        document.getElementById('speak-btn').disabled = true;
-    }
-
-    async function acceptAudioOffer(sdp) {
-        audioRelayPc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-
-        audioRelayPc.ontrack = (event) => {
-            const track = event.track;
-            if (!audioEl) {
-                audioEl = document.createElement('audio');
-                audioEl.autoplay = true; audioEl.playsInline = true;
-                audioEl.controls = true; // lets the listener pause/adjust volume directly
-                audioEl.style.display = 'block';
-                audioEl.style.width = '100%';
-                audioEl.style.marginTop = '8px';
-                document.getElementById('audio-status').insertAdjacentElement('afterend', audioEl);
-            }
-            // Defensive fallback: if streams is empty for any reason, build a
-            // MediaStream from the track directly rather than assigning undefined.
-            audioEl.srcObject = event.streams[0] || new MediaStream([track]);
-            attemptAudioPlay();
+        signalingWs.onclose = () => {
+            if (listenerEnded || currentRole !== 'listener') return;
+            setTimeout(() => { if (!listenerEnded) openListenerSignaling(code, language); }, 2000);
         };
-        audioRelayPc.onicecandidate = (e) => {
-            if (e.candidate && signalingWs.readyState === WebSocket.OPEN) {
-                signalingWs.send(JSON.stringify({ type: 'audio_ice', candidate: e.candidate }));
-            }
-        };
-        await audioRelayPc.setRemoteDescription({ type: 'offer', sdp });
-        const answer = await audioRelayPc.createAnswer();
-        await audioRelayPc.setLocalDescription(answer);
-        signalingWs.send(JSON.stringify({ type: 'audio_answer', sdp: answer.sdp }));
-    }
-
-    // Mobile browsers block audio autoplay unless play() is called as the
-    // direct result of a tap. By the time translated audio actually arrives,
-    // the original "Hear translation" tap is several async steps removed, so
-    // autoplay is often silently blocked. If so, offer a second tap here,
-    // which does count as a fresh gesture.
-    function attemptAudioPlay() {
-        if (!audioEl) return;
-        const statusEl = document.getElementById('audio-status');
-        audioEl.play().then(() => {
-            statusEl.textContent = '';
-            statusEl.onclick = null;
-            statusEl.style.cursor = ''; statusEl.style.textDecoration = ''; statusEl.style.fontWeight = '';
-        }).catch(() => {
-            statusEl.textContent = '🔊 Tap here to start audio';
-            statusEl.style.cursor = 'pointer';
-            statusEl.style.textDecoration = 'underline';
-            statusEl.style.fontWeight = '600';
-            statusEl.onclick = attemptAudioPlay;
-        });
     }
 
     function toggleAudio() {
         const btn = document.getElementById('audio-toggle-btn');
         const statusEl = document.getElementById('audio-status');
-        if (audioRelayPc) {
-            signalingWs.send(JSON.stringify({ type: 'stop_audio' }));
-            audioRelayPc.close(); audioRelayPc = null;
-            if (audioEl) audioEl.srcObject = null;
+        if (audioOn) {
+            stopAudioPlayback();
+            if (signalingWs && signalingWs.readyState === WebSocket.OPEN) {
+                signalingWs.send(JSON.stringify({ type: 'stop_audio' }));
+            }
             btn.textContent = '🔊 Hear translation';
-            statusEl.textContent = ''; statusEl.onclick = null;
-            statusEl.style.cursor = ''; statusEl.style.textDecoration = ''; statusEl.style.fontWeight = '';
-        } else {
-            signalingWs.send(JSON.stringify({ type: 'request_audio', language: listenerLanguage }));
-            btn.textContent = '🔇 Stop audio'; statusEl.textContent = 'Connecting audio...';
-            // If no audio track is actually flowing within a few seconds,
-            // tell the user instead of leaving "Connecting..." forever.
-            setTimeout(() => {
-                if (audioRelayPc && (!audioEl || !audioEl.srcObject)) {
-                    statusEl.textContent = 'No translated audio is available right now.';
-                }
-            }, 5000);
+            statusEl.textContent = '';
+            return;
         }
+        // iOS mutes Web Audio when the ring/silent switch is on unless the
+        // page declares itself as media playback (Safari 16.4+).
+        if (navigator.audioSession) navigator.audioSession.type = 'playback';
+        // Create and resume the context synchronously inside the tap -- that
+        // is what mobile browsers require before they'll play sound.
+        playCtx = new AudioCtx();
+        playCtx.resume();
+        playHead = 0;
+        audioOn = true;
+        if (signalingWs && signalingWs.readyState === WebSocket.OPEN) {
+            signalingWs.send(JSON.stringify({ type: 'request_audio' }));
+        }
+        btn.textContent = '🔇 Stop audio';
+        statusEl.textContent = 'Listening — audio starts with the next translated sentence.';
     }
 
-    // ── Reconnect on tab resume ──────────────────────────
+    function stopAudioPlayback() {
+        audioOn = false;
+        if (playCtx) { playCtx.close(); playCtx = null; }
+    }
+
+    // Each binary message is PCM16 24kHz mono from OpenAI. Schedule chunks
+    // back-to-back so playback is gapless while translation is flowing.
+    function playTranslatedAudio(buffer) {
+        if (!audioOn || !playCtx) return;
+        const pcm = new Int16Array(buffer, 0, Math.floor(buffer.byteLength / 2));
+        if (!pcm.length) return;
+        const audioBuffer = playCtx.createBuffer(1, pcm.length, 24000);
+        const channel = audioBuffer.getChannelData(0);
+        for (let i = 0; i < pcm.length; i++) channel[i] = pcm[i] / 32768;
+        const src = playCtx.createBufferSource();
+        src.buffer = audioBuffer;
+        src.connect(playCtx.destination);
+        // After a pause in speech, start slightly ahead of "now" rather than
+        // in the past; otherwise continue right where the last chunk ended.
+        const startAt = Math.max(playHead, playCtx.currentTime + 0.05);
+        src.start(startAt);
+        playHead = startAt + audioBuffer.duration;
+        document.getElementById('audio-status').textContent = '';
+    }
+
+    // ── Tab resume ───────────────────────────────────────
+    // Sockets reconnect on their own. Browsers may suspend audio contexts in
+    // background tabs, so wake them up when the tab is visible again.
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState !== 'visible' || !sessionCode) return;
-        if (currentRole === 'listener') {
-            if (!signalingWs || signalingWs.readyState === WebSocket.CLOSED) openListenerSignaling(sessionCode, listenerLanguage);
-        }
-        if (currentRole === 'leader') {
-            if (!signalingWs || signalingWs.readyState === WebSocket.CLOSED) openLeaderSignaling(sessionCode);
-            const baseDead = !pcBase || ['failed','closed','disconnected'].includes(pcBase.connectionState);
-            if (baseDead) {
-                if (pcBase) pcBase.close();
-                startBaseline(sessionCode).catch(err => console.error('resume baseline failed', err));
-            }
-            const transcribeDead = !pcTranscribe || ['failed','closed','disconnected'].includes(pcTranscribe.connectionState);
-            if (transcribeDead) {
-                if (pcTranscribe) pcTranscribe.close();
-                transcriptionMode = 'live';
-                startTranscription(sessionCode).catch(err => console.error('resume transcription failed', err));
-            }
-        }
+        if (document.visibilityState !== 'visible') return;
+        if (captureCtx && captureCtx.state === 'suspended') captureCtx.resume();
+        if (playCtx && playCtx.state === 'suspended') playCtx.resume();
     });
 
     // ── Modal open/close with scroll-lock ─────────────────
