@@ -287,9 +287,11 @@ async function translateToEnglish(session, transcript, sourceLanguage) {
         body: JSON.stringify({
             model: 'gpt-5.4-mini',
             instructions: `Translate live recovery-meeting speech into natural English captions.\n` +
+                `The text may be Spanish, English, or a mix of both. Translate only the non-English parts.\n` +
+                `If the text is already entirely English, return it exactly as given, word for word.\n` +
                 `Do not summarize, explain, censor, or add information. Preserve first-person voice and tone.\n` +
                 `Return ONLY the English caption text.\n${RECOVERY_GLOSSARY}`,
-            input: `Likely Source language: ${sourceLanguage || 'unknown'}\nTranscript: ${transcript}`,
+            input: `Why this was sent: ${sourceLanguage || 'unknown'}\nTranscript: ${transcript}`,
             max_output_tokens: 300
         })
     });
@@ -594,19 +596,41 @@ function handleSourceTranscriptDelta(pipeline, delta) {
     }, SOURCE_IDLE_FLUSH_MS);
 }
 
+// franc scales scores so the winner is always 1.0; the runner-up's score
+// says how close the call was. Translate when franc says Spanish, when it
+// can't decide ('und' -- usually short or mixed text), or when the runner-up
+// is this close. A wrong "translate" is cheap (English comes back as-is);
+// a wrong "pass through" leaves Spanish in the English captions.
+const FRANC_CLOSE_CALL = 0.85;
+
+function classifyChunk(chunk) {
+    const ranked = franc.francAll(chunk, { only: ['eng', 'spa'] });
+    const top = ranked[0][0];
+    const runnerUp = ranked[1] ? ranked[1][1] : 0;
+    if (top === 'spa') return { translate: true, reason: 'spanish', ranked };
+    if (top === 'und') return { translate: true, reason: 'undetermined', ranked };
+    if (runnerUp >= FRANC_CLOSE_CALL) return { translate: true, reason: 'close call', ranked };
+    return { translate: false, reason: 'english', ranked };
+}
+
 function emitSourceChunk(pipeline, chunk) {
     if (!chunk || !chunk.trim()) return;
     const session = sessions[pipeline.sessionCode];
     if (!session) return;
-    const lang = franc.francAll(chunk, { only: ['eng', 'spa'] })[0][0];
-    console.log(`[${pipeline.sessionCode}] source chunk lang=${lang}: ${chunk.trim()}`);
-    if (lang === 'spa') {
-        emitEnglishInOrder(pipeline,
-            translateToEnglish(session, chunk, 'spanish').then(t => t ? ' ' + t : t));
-    } else {
-        // 'eng', or 'und' (too short for franc to call) -- pass through.
+    const verdict = classifyChunk(chunk);
+    const scores = verdict.ranked.map(([l, s]) => `${l}=${s.toFixed(2)}`).join(' ');
+    console.log(`[${pipeline.sessionCode}] chunk ${verdict.translate ? 'TRANSLATE' : 'pass'} (${verdict.reason}; ${scores}): ${chunk.trim()}`);
+
+    if (!verdict.translate) {
         emitEnglishInOrder(pipeline, chunk);
+        return;
     }
+    const startedAt = Date.now();
+    emitEnglishInOrder(pipeline,
+        translateToEnglish(session, chunk, verdict.reason).then(t => {
+            console.log(`[${pipeline.sessionCode}] translated in ${Date.now() - startedAt}ms: ${chunk.trim()} -> ${t}`);
+            return t ? ' ' + t : t;
+        }));
 }
 
 // Emits English strictly in the order chunks were cut, even though a
