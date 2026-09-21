@@ -486,13 +486,13 @@
 
         openLeaderSignaling(code);
         micStream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
+            audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true, channelCount: 1 }
         });
-        if (sessionMode === 'transcript_only') {
+        /*if (sessionMode === 'transcript_only') {
             await startTranscription(code); // English captions only -- no Spanish translation session
         } else {
             await Promise.all([startBaseline(code), startTranscription(code)]);
-        }
+        }*/
         show('screen-leader-live');
     }
 

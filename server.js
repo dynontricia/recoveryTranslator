@@ -285,45 +285,50 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
     ws.on('close', (code) => console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): closed. code=${code}`));
 }
 
+
+async function translateToEnglish(session, transcript, sourceLanguage) {
+    const response = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${session.apiKey}`,
+            'Content-Type': 'application/json',
+            'OpenAI-Safety-Identifier': 'recovery-translator'
+        },
+        body: JSON.stringify({
+            model: 'gpt-5.4-mini',
+            instructions: `Translate live recovery-meeting speech into natural English captions.\n` +
+                `Do not summarize, explain, censor, or add information. Preserve first-person voice and tone.\n` +
+                `Return ONLY the English caption text.\n${RECOVERY_GLOSSARY}`,
+            input: `Likely Source language: ${sourceLanguage || 'unknown'}\nTranscript: ${transcript}`,
+            max_output_tokens: 300
+        })
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+        console.error(`text translation failed:`, JSON.stringify(data).slice(0, 1000));
+        return;
+    }
+
+    return (data.output || [])
+        .flatMap(item => item.content || [])
+        .filter(part => part.type === 'output_text')
+        .map(part => part.text || '')
+        .join('')
+        .trim();
+}
+
 // Translate a completed non-English transcript to English. This is deliberately
 // text-to-text: it gives us glossary control and avoids asking the speech
 // translation model to perform English -> English passthrough.
 async function translateTranscriptToEnglish(pipeline, transcript, sourceLanguage) {
     const session = sessions[pipeline.sessionCode];
+
     if (!session || !transcript || !transcript.trim()) return;
 
     try {
-        const response = await fetch('https://api.openai.com/v1/responses', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${session.apiKey}`,
-                'Content-Type': 'application/json',
-                'OpenAI-Safety-Identifier': 'recovery-translator'
-            },
-            body: JSON.stringify({
-                model: 'gpt-5.4-mini',
-                instructions: `Translate live recovery-meeting speech into natural English captions.\n` +
-                    `Do not summarize, explain, censor, or add information. Preserve first-person voice and tone.\n` +
-                    `Return ONLY the English caption text.\n${RECOVERY_GLOSSARY}`,
-                input: `Source language: ${sourceLanguage || 'unknown'}\nTranscript: ${transcript}`,
-                max_output_tokens: 300
-            })
-        });
-
-        const data = await response.json();
-        if (!response.ok) {
-            console.error(`RTMS/OpenAI [${pipeline.sessionCode}] text translation failed:`, JSON.stringify(data).slice(0, 1000));
-            return;
-        }
-
-        const english = (data.output || [])
-            .flatMap(item => item.content || [])
-            .filter(part => part.type === 'output_text')
-            .map(part => part.text || '')
-            .join('')
-            .trim();
-
-        if (english) {
+        let eng = await translateToEnglish(session, transcript, sourceLanguage);
+        if (eng) {
             broadcast(pipeline.sessionCode, 'english', english + ' ');
             queueZoomCaption(pipeline, english, 'en-US');
         }
@@ -471,7 +476,8 @@ function createSession(apiKey, micDistance, mode) {
         listenerSockets: {},
         speakQueue: [],
         spanishTurn: false,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        leaderEnglishTranscript: ''
     };
     return code;
 }
@@ -1078,25 +1084,60 @@ wss.on('connection', (ws, req) => {
 
         ws.on('message', (data) => {
             const msg = JSON.parse(data);
-            console.log('message:', msg);
             if (msg.type === 'transcript') {
-                broadcast(sessionCode, msg.language, msg.delta);
-            }
-
-            // Start/stop of a Spanish speaker's turn.
-            if (msg.type === 'spanish_turn' && session.mode !== 'transcript_only') {
-                session.spanishTurn = !!msg.active;
-                broadcastControl(sessionCode, { type: 'spanish_turn', active: session.spanishTurn });
-            }
-
-            if (msg.type === 'approve') {
-                const reqItem = session.speakQueue.find(r => r.id === msg.id);
-                session.speakQueue = session.speakQueue.filter(r => r.id !== msg.id);
-                if (reqItem) {
-                    const entry = session.listenerSockets[reqItem.id];
-                    if (entry && entry.ws.readyState === WebSocket.OPEN) {
-                        entry.ws.send(JSON.stringify({ type: 'approved' }));
+                if(msg.language === 'english') {
+                    console.log('message:', msg, role);
+                    console.log("Leader transcript so far: ", session.leaderEnglishTranscript);
+                    console.log(session.leaderEnglishTranscript.split(" "));
+                    console.log(session.leaderEnglishTranscript.split(" ").length, msg.delta);
+                    console.log(session.leaderEnglishTranscript.split(" ").length > 4);
+                    let endings = ['', ' ', '\n', ',', '.', '!', '?'];
+                    let final = endings.includes(msg.delta);
+                    console.log("Final: ", final);
+                    let transcript_pieces = session.leaderEnglishTranscript.split(" ");
+                    //if there are 5 words in the pieces, we should test the language
+                    if(transcript_pieces.length > 4) {
+                        //if the first character of the next delta is a space, we can process what we have
+                        if (msg.delta[0] === ' ') {
+                            let detect = franc.francAll(session.leaderEnglishTranscript, {only: ['eng', 'spa']});
+                            console.log("Leader transcript received: ", session.leaderEnglishTranscript);
+                            console.log("Leader language detected: ", detect);
+                            if(detect[0][0] === 'eng') {
+                                broadcast(sessionCode, msg.language, session.leaderEnglishTranscript);
+                                session.leaderEnglishTranscript = msg.delta;
+                            } else {
+                                translateToEnglish(session, session.leaderEnglishTranscript, 'english')
+                                    .then(translated => {
+                                        console.log("Translated leader transcript: ", translated);
+                                        broadcast(sessionCode, msg.language, translated);
+                                        session.leaderEnglishTranscript = msg.delta;
+                                })
+                            }
+                        //msg delta = an ending or pause to the statement
+                        } else if(final) {
+                            session.leaderEnglishTranscript += msg.delta;
+                            let detect = franc.francAll(session.leaderEnglishTranscript, {only: ['eng', 'spa']});
+                            console.log("Leader transcript received: ", session.leaderEnglishTranscript);
+                            console.log("Leader language detected: ", detect);
+                            if(detect[0][0] === 'eng') {
+                                broadcast(sessionCode, msg.language, session.leaderEnglishTranscript);
+                                session.leaderEnglishTranscript = "";
+                            } else {
+                                let pipe = {sessionCode: sessionCode};
+                                translateToEnglish(session, session.leaderEnglishTranscript, 'spanish')
+                                    .then(translated => {
+                                        broadcast(sessionCode, msg.language, translated);
+                                        session.leaderEnglishTranscript = "";
+                                })
+                            }
+                        } else {
+                            session.leaderEnglishTranscript += msg.delta;
+                        }
+                    } else {
+                        session.leaderEnglishTranscript += msg.delta;
                     }
+                } else if(msg.language === 'spanish') {
+                    broadcast(sessionCode, msg.language, msg.delta);
                 }
             }
 
@@ -1135,16 +1176,6 @@ wss.on('connection', (ws, req) => {
         ws.on('message', (data) => {
             const msg = JSON.parse(data);
             console.log('list message:', msg);
-
-            if (msg.type === 'request_speak') {
-                if (!session.speakQueue.find(r => r.id === id)) {
-                    session.speakQueue.push({ id, language });
-                }
-                const leaderSocket = session.leaderSocket;
-                if (leaderSocket && leaderSocket.readyState === WebSocket.OPEN) {
-                    leaderSocket.send(JSON.stringify({ type: 'speak_request', id, language }));
-                }
-            }
 
             if (['request_audio', 'stop_audio', 'audio_answer', 'audio_ice'].includes(msg.type)) {
                 const leaderSocket = session.leaderSocket;
