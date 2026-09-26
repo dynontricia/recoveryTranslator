@@ -285,14 +285,10 @@ async function translateToEnglish(session, transcript, sourceLanguage) {
             'OpenAI-Safety-Identifier': 'recovery-translator'
         },
         body: JSON.stringify({
-            model: 'gpt-5.4-mini',
-            instructions: `Translate live recovery-meeting speech into natural English captions.\n` +
-                `The text may be Spanish, English, or a mix of both. Translate only the non-English parts.\n` +
-                `If the text is already entirely English, return it exactly as given, word for word.\n` +
-                `Do not summarize, explain, censor, or add information. Preserve first-person voice and tone.\n` +
-                `Return ONLY the English caption text.\n${RECOVERY_GLOSSARY}`,
-            input: `Why this was sent: ${sourceLanguage || 'unknown'}\nTranscript: ${transcript}`,
-            max_output_tokens: 300
+            model: 'gpt-4o-mini',
+            instructions: `Translate to English. If the input is already English, return it unchanged. If it contains both English and Spanish, translate the Spanish into natural English. Return only the final English text.`,
+            input: `Transcript: ${transcript}`,
+            max_output_tokens: 100
         })
     });
 
