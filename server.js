@@ -142,10 +142,12 @@ function flushZoomCaption(pipeline, lang) {
     if (text) postZoomCaption(pipeline, text, lang);
 }
 
-async function postZoomCaption(pipeline, text, lang) {
+async function postZoomCaption(pipeline, text, lang, seqOverride = null) {
     if (!pipeline.zoomCaptionUrl || !text || !text.trim()) return;
 
-    const seq = pipeline.captionSeq++;
+    // Normal captions advance the sequence. A supplied seqOverride is used only
+    // by the controlled overwrite diagnostic so we can test current Zoom behavior.
+    const seq = seqOverride == null ? pipeline.captionSeq++ : seqOverride;
     const sep = pipeline.zoomCaptionUrl.includes('?') ? '&' : '?';
     const url = `${pipeline.zoomCaptionUrl}${sep}seq=${seq}&lang=${lang}`;
 
@@ -172,6 +174,41 @@ async function postZoomCaption(pipeline, text, lang) {
         delayMs = Math.min(delayMs * 2, 1600);
     }
     console.error(`Zoom caption POST gave up after ~5s (seq ${seq})`);
+}
+
+// TEMPORARY DIAGNOSTIC: prove whether current Zoom captioning replaces text
+// when the same seq is POSTed more than once. Runs once per RTMS pipeline.
+async function testZoomCaptionOverride(pipeline) {
+    if (!pipeline.zoomCaptionUrl || pipeline.zoomOverrideTestRun) return;
+    pipeline.zoomOverrideTestRun = true;
+
+    // Keep this far away from the normal counter so the diagnostic cannot collide
+    // with ordinary captions during a realistic meeting.
+    const seq = 900000000;
+    const tests = [
+        'TEST: The quick brown',
+        'TEST: The quick brown fox jumps',
+        'TEST: The quick brown fox jumps over the lazy dog.'
+    ];
+
+    console.log(`ZOOM OVERRIDE TEST [${pipeline.sessionCode}]: starting with repeated seq=${seq}`);
+    for (const text of tests) {
+        const sep = pipeline.zoomCaptionUrl.includes('?') ? '&' : '?';
+        const url = `${pipeline.zoomCaptionUrl}${sep}seq=${seq}&lang=en-US`;
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+                body: text
+            });
+            const body = await res.text().catch(() => '');
+            console.log(`ZOOM OVERRIDE TEST [${pipeline.sessionCode}]: seq=${seq} HTTP ${res.status} text=${JSON.stringify(text)} response=${JSON.stringify(body).slice(0, 500)}`);
+        } catch (err) {
+            console.error(`ZOOM OVERRIDE TEST [${pipeline.sessionCode}]: request failed:`, err.message);
+        }
+        await new Promise(r => setTimeout(r, 2000));
+    }
+    console.log(`ZOOM OVERRIDE TEST [${pipeline.sessionCode}]: complete -- check Zoom to see whether one caption changed in place or multiple captions appeared.`);
 }
 
 function toAudioBuffer(data) {
@@ -242,6 +279,7 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
 
         if (ev.type === 'session.updated') {
             pipeline[readyKey] = true;
+            pipeline.translateReconnectAttempts = 0;
             console.log(`[${pipeline.sessionCode}] translate(${targetLanguage}): live`);
             return;
         }
@@ -273,7 +311,22 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
     });
 
     ws.on('error', (err) => console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}) WS error:`, err.message));
-    ws.on('close', (code) => console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): closed. code=${code}`));
+    ws.on('close', (code, reason) => {
+        pipeline[readyKey] = false;
+        console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): CLOSED code=${code} reason=${reason ? reason.toString() : ''}`);
+
+        // A translation socket also carries our Whisper input transcript, so a
+        // dead socket means captions silently stop. Reconnect unless teardown was
+        // intentional. Back off a little more after each consecutive failure.
+        if (!pipeline.shuttingDown) {
+            pipeline.translateReconnectAttempts = (pipeline.translateReconnectAttempts || 0) + 1;
+            const delay = Math.min(1000 * Math.pow(2, pipeline.translateReconnectAttempts - 1), 10000);
+            console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): reconnecting in ${delay}ms`);
+            setTimeout(() => {
+                if (!pipeline.shuttingDown) connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcastLanguage);
+            }, delay);
+        }
+    });
 }
 
 
@@ -442,23 +495,41 @@ function connectCaptionTranscriptionWs(pipeline) {
 // doesn't have to paste it every meeting. Zoom's UUIDs contain characters
 // (/ + =) that MUST be double-URL-encoded -- skipping that is the documented
 // cause of "3001 Meeting does not exist" errors on this endpoint.
-async function fetchZoomCaptionUrl(pipeline, meetingUuid, accessToken) {
-    if (!meetingUuid || !accessToken) return false;
-    const encoded = encodeURIComponent(encodeURIComponent(meetingUuid));
+async function fetchZoomCaptionUrl(pipeline, meetingId, accessToken) {
+    if (!meetingId || !accessToken) {
+        console.error(`CAPTION TOKEN [${pipeline.sessionCode}]: fetch skipped meetingId=${!!meetingId} accessToken=${!!accessToken}`);
+        return false;
+    }
+
+    // Numeric meeting IDs can be encoded normally. UUIDs containing / + = need
+    // Zoom's documented double encoding when used in the meeting path.
+    const rawId = String(meetingId);
+    const encoded = /^[0-9]+$/.test(rawId)
+        ? encodeURIComponent(rawId)
+        : encodeURIComponent(encodeURIComponent(rawId));
+
+    const endpoint = `https://api.zoom.us/v2/meetings/${encoded}/token?type=closed_caption`;
+    console.log(`CAPTION TOKEN [${pipeline.sessionCode}]: requesting token using meeting identifier ${JSON.stringify(rawId)} (${ /^[0-9]+$/.test(rawId) ? 'meeting_id' : 'uuid-like' })`);
+
     try {
-        const res = await fetch(`https://api.zoom.us/v2/meetings/${encoded}/token?type=closed_caption`, {
+        const res = await fetch(endpoint, {
             headers: { 'Authorization': `Bearer ${accessToken}` }
         });
-        const data = await res.json();
-        console.log(`RTMS [${pipeline.sessionCode}]: fetched caption token:`, data);
+        const raw = await res.text();
+        let data = {};
+        try { data = raw ? JSON.parse(raw) : {}; } catch (e) { data = { raw }; }
+
+        console.log(`CAPTION TOKEN [${pipeline.sessionCode}]: HTTP ${res.status} response=${JSON.stringify(data).slice(0, 1000)}`);
         if (res.ok && data.token) {
             pipeline.zoomCaptionUrl = data.token;
-            console.log(`RTMS [${pipeline.sessionCode}]: caption token fetched automatically -- no manual paste needed`);
+            console.log(`CAPTION TOKEN [${pipeline.sessionCode}]: SUCCESS -- automatic Zoom caption URL obtained`);
+            // Diagnostic build: run the repeated-sequence experiment exactly once.
+            setTimeout(() => testZoomCaptionOverride(pipeline), 500);
             return true;
         }
-        console.log(`RTMS [${pipeline.sessionCode}]: auto caption-token fetch failed (HTTP ${res.status}): ${JSON.stringify(data).slice(0, 200)}. Host can still paste the token manually.`);
+        console.error(`CAPTION TOKEN [${pipeline.sessionCode}]: FAILED -- manual paste remains available`);
     } catch (err) {
-        console.error(`RTMS [${pipeline.sessionCode}]: auto caption-token fetch error:`, err.message);
+        console.error(`CAPTION TOKEN [${pipeline.sessionCode}]: request error:`, err.message);
     }
     return false;
 }
@@ -476,6 +547,9 @@ function createCaptionPipeline(streamKey, sessionCode) {
         esWs: null, esReady: false,
         zoomCaptionUrl: null,
         captionSeq: 1,
+        zoomOverrideTestRun: false,
+        shuttingDown: false,
+        translateReconnectAttempts: 0,
         audioFrameCount: 0,
         sourceBuffer: '',
         sourceIdleTimer: null,
@@ -523,6 +597,7 @@ function feedPipelineAudio(pipeline, data) {
 function teardownCaptionPipeline(streamKey) {
     const pipeline = rtmsCaptionPipelines.get(streamKey);
     if (!pipeline) return;
+    pipeline.shuttingDown = true;
     if (pipeline.sourceIdleTimer) clearTimeout(pipeline.sourceIdleTimer);
     if (pipeline.sourceBuffer) emitSourceChunk(pipeline, pipeline.sourceBuffer);
     // Flush buffered caption text so the last words spoken aren't dropped.
@@ -944,6 +1019,9 @@ const server = http.createServer((req, res) => {
             }
             pipeline.zoomCaptionUrl = captionUrl;
             console.log(`RTMS [${sessionCode}]: Zoom caption URL set -- captions will now also post to Zoom's native caption bar`);
+            // Diagnostic build: the same-sequence overwrite test also runs when
+            // automatic token retrieval failed and the host pasted the URL.
+            setTimeout(() => testZoomCaptionOverride(pipeline), 500);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true }));
         });
@@ -1056,8 +1134,14 @@ const server = http.createServer((req, res) => {
                     // doesn't paste it each meeting. Falls back silently to
                     // manual paste if this doesn't work.
                     console.log(`payload: ${JSON.stringify(payload)}`);
-                    if (zoomAccessToken && payload.payload && payload.payload.meeting_uuid) {
-                        fetchZoomCaptionUrl(pipeline, payload.payload.meeting_uuid, zoomAccessToken);
+                    const meetingId = payload.payload && (payload.payload.meeting_id || payload.payload.meeting_uuid);
+                    console.log(`CAPTION TOKEN [${sessionCode}]: meeting_id=${JSON.stringify(payload.payload && payload.payload.meeting_id)} meeting_uuid=${JSON.stringify(payload.payload && payload.payload.meeting_uuid)} OAuthTokenPresent=${!!zoomAccessToken}`);
+                    if (!zoomAccessToken) {
+                        console.error(`CAPTION TOKEN [${sessionCode}]: SKIPPED -- Zoom OAuth access token is missing (server restart/deploy after authorization will currently cause this)`);
+                    } else if (!meetingId) {
+                        console.error(`CAPTION TOKEN [${sessionCode}]: SKIPPED -- RTMS webhook contained no meeting_id or meeting_uuid`);
+                    } else {
+                        fetchZoomCaptionUrl(pipeline, meetingId, zoomAccessToken);
                     }
 
                     client.onAudioData((data, size, timestamp, metadata) => {
