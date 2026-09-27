@@ -153,4 +153,5 @@ vite.config.ts.timestamp-*
 /dataSources.local.xml
 .env
 node_modules
-/.idea/php.xml
+/.idea/
+data/
