@@ -1,6 +1,7 @@
 require('dotenv').config();
 const http = require('http');
 const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
 const WebSocket = require('ws');
 const franc = require('franc-min');
@@ -40,17 +41,134 @@ const rtmsClients = new Map();
 // transcription, caption broadcast) can be torn down together on stop.
 const rtmsCaptionPipelines = new Map();
 
-// Lets zoom-app.html discover its own session code after calling
-// startRTMS() (the SDK response doesn't include one), and lets the
-// Spanish-turn toggle endpoint find the right pipeline by session code
-// instead of the raw Zoom stream ID.
-let lastRtmsSessionCode = null;
+// ---- Zoom audio <-> session pairing ------------------------------------
+// A session started with "Zoom meeting" as its audio input waits for Zoom's
+// audio stream; a Zoom stream that arrives first (e.g. RTMS auto-start)
+// waits for a session. Whichever shows up second connects them. Until
+// then, Zoom audio is ignored -- no OpenAI session, no cost.
+// Pairs one meeting at a time: the most recent waiting session.
+let zoomWaitingSession = null;           // { sessionCode, at }
+const rtmsStreamInfo = new Map();        // streamId -> { sessionCode|null, meetingId, startedAt }
+const ZOOM_WAIT_MAX_MS = 30 * 60 * 1000; // a waiting session expires after 30 min
 
-// Zoom OAuth access token, captured at install time. Used to auto-fetch each
-// meeting's closed-caption token so the host doesn't paste it every meeting.
-// In-memory only, so it's lost on restart -- manual paste remains the
-// fallback. Persisting (and refreshing) it is a future improvement.
-let zoomAccessToken = null;
+function connectZoomAudio(sessionCode) {
+    const session = sessions[sessionCode];
+    if (!session || session.ended) return 'no-session';
+    // Zoom audio already flowing with no session? Claim the newest one now.
+    const unclaimed = [...rtmsStreamInfo.entries()]
+        .filter(([, info]) => !info.sessionCode)
+        .sort((a, b) => b[1].startedAt - a[1].startedAt)[0];
+    if (unclaimed) {
+        attachRtmsStream(unclaimed[0], sessionCode);
+        return 'connected';
+    }
+    zoomWaitingSession = { sessionCode, at: Date.now() };
+    console.log(`[${sessionCode}] waiting for Zoom audio`);
+    return 'waiting';
+}
+
+function takeWaitingZoomSession() {
+    const w = zoomWaitingSession;
+    if (!w) return null;
+    const s = sessions[w.sessionCode];
+    if (!s || s.ended || Date.now() - w.at > ZOOM_WAIT_MAX_MS) { zoomWaitingSession = null; return null; }
+    return w.sessionCode;
+}
+
+function attachRtmsStream(streamId, sessionCode) {
+    const info = rtmsStreamInfo.get(streamId);
+    if (!info) return null;
+    info.sessionCode = sessionCode;
+    if (zoomWaitingSession && zoomWaitingSession.sessionCode === sessionCode) zoomWaitingSession = null;
+    const pipeline = createCaptionPipeline(streamId, sessionCode);
+    console.log(`[${sessionCode}] Zoom audio connected (stream ${streamId})`);
+    return pipeline;
+}
+
+// The session a Zoom panel should show: one waiting for Zoom audio, else the
+// newest session already receiving it.
+function currentZoomSessionCode() {
+    const waiting = takeWaitingZoomSession();
+    if (waiting) return waiting;
+    const newest = [...rtmsStreamInfo.values()]
+        .filter(info => info.sessionCode && sessions[info.sessionCode] && !sessions[info.sessionCode].ended)
+        .sort((a, b) => b.startedAt - a.startedAt)[0];
+    return newest ? newest.sessionCode : null;
+}
+
+// ---- Zoom OAuth tokens ----------------------------------------------------
+// Saved to a file so they survive restarts and deploys. Zoom access tokens
+// last one hour; we refresh them with the refresh token automatically.
+// On Railway, attach a Volume (e.g. mounted at /data) and set
+// ZOOM_TOKEN_FILE=/data/zoom-tokens.json -- otherwise the file is wiped on
+// every deploy, just like the old in-memory variable was.
+// Holds ONE Zoom user's tokens (the account that installed the app).
+const ZOOM_TOKEN_FILE = process.env.ZOOM_TOKEN_FILE || path.join(__dirname, 'data', 'zoom-tokens.json');
+let zoomTokens = loadZoomTokens();
+let zoomRefreshInFlight = null;
+
+function loadZoomTokens() {
+    try {
+        const t = JSON.parse(fs.readFileSync(ZOOM_TOKEN_FILE, 'utf8'));
+        console.log(`Zoom tokens loaded from ${ZOOM_TOKEN_FILE}`);
+        return t;
+    } catch (e) {
+        console.log(`No saved Zoom tokens at ${ZOOM_TOKEN_FILE} -- install/authorize the Zoom app to create them`);
+        return null;
+    }
+}
+
+function storeZoomTokens(data) {
+    zoomTokens = {
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+        expires_at: Date.now() + (data.expires_in || 3600) * 1000,
+        scope: data.scope
+    };
+    try {
+        fs.mkdirSync(path.dirname(ZOOM_TOKEN_FILE), { recursive: true });
+        fs.writeFileSync(ZOOM_TOKEN_FILE, JSON.stringify(zoomTokens), { mode: 0o600 });
+    } catch (e) {
+        console.error(`Could not save Zoom tokens to ${ZOOM_TOKEN_FILE}:`, e.message);
+    }
+}
+
+// Returns a valid access token, refreshing it if it's expired or about to.
+// forceRefresh is used when Zoom rejects a token we thought was valid.
+async function getZoomAccessToken(forceRefresh = false) {
+    if (!zoomTokens) return null;
+    const fresh = zoomTokens.access_token && zoomTokens.expires_at - 60000 > Date.now();
+    if (fresh && !forceRefresh) return zoomTokens.access_token;
+    if (!zoomTokens.refresh_token) return null;
+    // Zoom issues a NEW refresh token on every refresh and retires the old
+    // one, so two refreshes at once would break the second. One at a time.
+    if (!zoomRefreshInFlight) {
+        zoomRefreshInFlight = refreshZoomToken().finally(() => { zoomRefreshInFlight = null; });
+    }
+    return zoomRefreshInFlight;
+}
+
+async function refreshZoomToken() {
+    try {
+        const basic = Buffer.from(`${process.env.ZOOM_CLIENT_ID}:${process.env.ZOOM_CLIENT_SECRET}`).toString('base64');
+        const res = await fetch('https://zoom.us/oauth/token', {
+            method: 'POST',
+            headers: { 'Authorization': `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: zoomTokens.refresh_token }).toString()
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            console.error('Zoom token refresh FAILED -- reinstall/re-authorize the app:', JSON.stringify(data));
+            return null;
+        }
+        storeZoomTokens(data);
+        console.log('Zoom access token refreshed');
+        return zoomTokens.access_token;
+    } catch (err) {
+        console.error('Zoom token refresh error:', err.message);
+        return null;
+    }
+}
 
 // RTMS's default audio is 16kHz mono PCM16, but OpenAI's realtime API
 // requires 24kHz. 16000->24000 is a clean 2:3 ratio, so a simple linear
@@ -106,8 +224,15 @@ Use recovery-fellowship terminology consistently. Preferred English terms includ
 Preserve fellowship names, Step/Tradition/Concept numbers, acronyms, and proper names.
 `;
 
+// Zoom gives a meeting ONE caption stream, with no per-viewer language
+// choice. pipeline.zoomCaptionLang picks which language goes there:
+// 'spanish' (default), 'english', or 'off'. Every caller goes through this
+// gate, so nothing else needs to know the setting.
+const ZOOM_CAPTION_LANG_CODES = { english: 'en-US', spanish: 'es-ES' };
+
 function queueZoomCaption(pipeline, text, lang) {
     if (!pipeline.zoomCaptionUrl || !text) return;
+    if (lang !== ZOOM_CAPTION_LANG_CODES[pipeline.zoomCaptionLang]) return;
 
     pipeline.captionBuffers = pipeline.captionBuffers || {};
     pipeline.captionFlushTimers = pipeline.captionFlushTimers || {};
@@ -252,12 +377,19 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
 
         // 1) Spanish captions: this session's translated output.
         if (ev.type === 'session.output_transcript.delta' && ev.delta && broadcastLanguage === 'spanish') {
-            if (!transcriptOnly) broadcast(pipeline.sessionCode, 'spanish', ev.delta);
+            if (!transcriptOnly) {
+                broadcast(pipeline.sessionCode, 'spanish', ev.delta);
+                queueZoomCaption(pipeline, ev.delta, 'es-ES');
+            }
             return;
         }
 
         // 2) Spanish audio: relayed to listeners who tapped "Hear translation".
         if (ev.type === 'session.output_audio.delta' && ev.delta && broadcastLanguage === 'spanish') {
+            if (!pipeline.loggedFirstAudio) {
+                pipeline.loggedFirstAudio = true;
+                console.log(`[${pipeline.sessionCode}] AUDIO checkpoint 1: OpenAI is producing Spanish audio`);
+            }
             if (!transcriptOnly) relayTranslatedAudio(pipeline.sessionCode, Buffer.from(ev.delta, 'base64'));
             return;
         }
@@ -442,9 +574,11 @@ function connectCaptionTranscriptionWs(pipeline) {
 // doesn't have to paste it every meeting. Zoom's UUIDs contain characters
 // (/ + =) that MUST be double-URL-encoded -- skipping that is the documented
 // cause of "3001 Meeting does not exist" errors on this endpoint.
-async function fetchZoomCaptionUrl(pipeline, meetingId, accessToken) {
+async function fetchZoomCaptionUrl(pipeline, meetingId, isRetry = false) {
+    const accessToken = await getZoomAccessToken(isRetry);
     if (!meetingId || !accessToken) {
-        console.error(`CAPTION TOKEN [${pipeline.sessionCode}]: fetch skipped meetingId=${!!meetingId} accessToken=${!!accessToken}`);
+        console.error(`CAPTION TOKEN [${pipeline.sessionCode}]: skipped -- meetingId=${!!meetingId} accessToken=${!!accessToken}` +
+            (accessToken ? '' : ' (not authorized: open the app in Zoom and approve it, or check the token refresh log above)'));
         return false;
     }
 
@@ -470,10 +604,15 @@ async function fetchZoomCaptionUrl(pipeline, meetingId, accessToken) {
         if (res.ok && data.token) {
             pipeline.zoomCaptionUrl = data.token;
             console.log(`CAPTION TOKEN [${pipeline.sessionCode}]: SUCCESS -- automatic Zoom caption URL obtained`);
-            // Diagnostic build: run the repeated-sequence experiment exactly once.
-            setTimeout(() => testZoomCaptionOverride(pipeline), 500);
             return true;
         }
+        // 401 = token rejected (expired or revoked). Refresh once and retry.
+        if (res.status === 401 && !isRetry) {
+            console.log(`CAPTION TOKEN [${pipeline.sessionCode}]: 401 -- refreshing Zoom token and retrying once`);
+            return fetchZoomCaptionUrl(pipeline, meetingId, true);
+        }
+        // Zoom's error message names any missing scope, e.g.
+        // "Invalid access token, does not contain scopes: [...]".
         console.error(`CAPTION TOKEN [${pipeline.sessionCode}]: FAILED -- manual paste remains available`);
     } catch (err) {
         console.error(`CAPTION TOKEN [${pipeline.sessionCode}]: request error:`, err.message);
@@ -493,6 +632,7 @@ function createCaptionPipeline(streamKey, sessionCode) {
         enWs: null, enReady: false,
         esWs: null, esReady: false,
         zoomCaptionUrl: null,
+        zoomCaptionLang: 'off', // captions are shown in our own Zoom panel instead
         captionSeq: 1,
         audioFrameCount: 0,
         sourceBuffer: '',
@@ -551,22 +691,28 @@ function teardownCaptionPipeline(streamKey) {
     if (pipeline.enWs) pipeline.enWs.close();
     if (pipeline.esWs) pipeline.esWs.close();
     rtmsCaptionPipelines.delete(streamKey);
-    if (lastRtmsSessionCode === pipeline.sessionCode) lastRtmsSessionCode = null;
 }
 
-function createSession(apiKey, micDistance, mode) {
+function findPipelineBySession(sessionCode) {
+    for (const p of rtmsCaptionPipelines.values()) if (p.sessionCode === sessionCode) return p;
+    return null;
+}
+
+function createSession(apiKey, micDistance, mode, audioSource) {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     sessions[code] = {
         apiKey,
         micDistance: micDistance === 'near_field' ? 'near_field' : 'far_field',
         mode: mode === 'transcript_only' ? 'transcript_only' : 'bilingual',
+        audioSource: audioSource === 'zoom' ? 'zoom' : 'device',
         clients: { english: [], spanish: [] },
         leaderSocket: null,
         listenerSockets: {},
         speakQueue: [],
         spanishTurn: false,
         createdAt: Date.now(),
-        leaderEnglishTranscript: ''
+        leaderEnglishTranscript: '',
+        zoomToken: ''
     };
     return code;
 }
@@ -676,9 +822,13 @@ function emitEnglishInOrder(pipeline, textOrPromise) {
 function relayTranslatedAudio(sessionCode, pcmBuffer) {
     const session = sessions[sessionCode];
     if (!session) return;
-    Object.values(session.listenerSockets).forEach(entry => {
+    Object.entries(session.listenerSockets).forEach(([id, entry]) => {
         if (entry.wantsAudio && entry.ws.readyState === WebSocket.OPEN) {
             entry.ws.send(pcmBuffer, { binary: true });
+            entry.audioChunksSent = (entry.audioChunksSent || 0) + 1;
+            if (entry.audioChunksSent === 1 || entry.audioChunksSent % 100 === 0) {
+                console.log(`[${sessionCode}] AUDIO checkpoint 3: sent ${entry.audioChunksSent} chunk(s) to listener ${id}`);
+            }
         }
     });
 }
@@ -858,9 +1008,10 @@ const server = http.createServer((req, res) => {
             if (creds.apiKey === 'default-api-key') {
                 creds.apiKey = process.env.OPENAI_API_KEY;
             }
-            const code = createSession(creds.apiKey, creds.micDistance, creds.mode);
+            const code = createSession(creds.apiKey, creds.micDistance, creds.mode, creds.audioSource);
+            const zoomAudio = creds.audioSource === 'zoom' ? connectZoomAudio(code) : undefined;
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ sessionCode: code }));
+            res.end(JSON.stringify({ sessionCode: code, zoomAudio }));
         });
     }
 
@@ -916,19 +1067,65 @@ const server = http.createServer((req, res) => {
         //      into our OpenAI sessions is the next phase, once we've confirmed
         //      the webhook itself is reachable and verified.
         // Lets zoom-app.html discover the session code for the RTMS stream it
-    // just started (the startRTMS() SDK response doesn't include one).
-    else if (req.method === 'GET' && pathname === '/zoom/latest-session') {
+        // just started (the startRTMS() SDK response doesn't include one).
+    // Which session the Zoom panel should show right now.
+    else if (req.method === 'GET' && pathname === '/zoom/current-session') {
+        const code = currentZoomSessionCode();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ sessionCode: lastRtmsSessionCode }));
+        res.end(JSON.stringify(code
+            ? { sessionCode: code, mode: sessions[code].mode, audioConnected: !!findPipelineBySession(code) }
+            : { sessionCode: null }));
     }
 
-        // Toggle for "a Spanish speaker has the floor," called from the Zoom
-        // App panel. Now a no-op -- dual-feed removed the need for a toggle.
-        // leader flow, just driven by sessionCode instead of a button on the
-        // leader screen.
-        // Receives the host's Zoom closed-caption token URL ("Copy the API token"
-        // from the meeting's caption menu), enabling captions to appear in Zoom's
-    // own native caption bar rather than only on our display page.
+        // Panel's "Start captions": claim Zoom audio for this session (now, or
+    // as soon as the stream starts).
+    else if (req.method === 'POST' && pathname === '/zoom/connect') {
+        let body = '';
+        req.on('data', c => { body += c; });
+        req.on('end', () => {
+            let parsed = {};
+            try { parsed = JSON.parse(body); } catch (e) {}
+            const status = connectZoomAudio(parsed.sessionCode);
+            res.writeHead(status === 'no-session' ? 404 : 200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status }));
+        });
+    }
+
+    else if (req.method === 'GET' && pathname === '/zoom/session-status') {
+        const code = parsedUrl.searchParams.get('code');
+        const s = sessions[code];
+        const p = findPipelineBySession(code);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            exists: !!s && !s.ended,
+            mode: s ? s.mode : null,
+            audioConnected: !!p,
+            zoomCaptionReady: !!(p && p.zoomCaptionUrl),
+            zoomCaptionLang: p ? p.zoomCaptionLang : null
+        }));
+    }
+
+    else if (req.method === 'POST' && pathname === '/zoom/caption-language') {
+        let body = '';
+        req.on('data', c => { body += c; });
+        req.on('end', () => {
+            let parsed = {};
+            try { parsed = JSON.parse(body); } catch (e) {}
+            const p = findPipelineBySession(parsed.sessionCode);
+            if (!p || !['spanish', 'english', 'off'].includes(parsed.language)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Need an active sessionCode and language spanish|english|off' }));
+                return;
+            }
+            // Send anything half-buffered in the old language before switching.
+            if (p.captionBuffers) Object.keys(p.captionBuffers).forEach(l => flushZoomCaption(p, l));
+            p.zoomCaptionLang = parsed.language;
+            console.log(`[${p.sessionCode}] Zoom caption bar language -> ${parsed.language}`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ zoomCaptionLang: p.zoomCaptionLang }));
+        });
+    }
+
     else if (req.method === 'POST' && pathname === '/zoom/caption-url') {
         let body = '';
         req.on('data', chunk => { body += chunk.toString(); });
@@ -1036,6 +1233,7 @@ const server = http.createServer((req, res) => {
                 if (client) { client.leave(); rtmsClients.delete(streamId); }
 
                 teardownCaptionPipeline(streamId);
+                rtmsStreamInfo.delete(streamId);
                 console.log('RTMS client and caption pipeline stopped for stream', streamId);
                 return;
             }
@@ -1059,33 +1257,24 @@ const server = http.createServer((req, res) => {
                         });
                     }
 
-                    // Auto-create a bilingual caption session for this Zoom
-                    // meeting, same way the leader onboarding flow does, so we
-                    // get the exact same display/transcript/SSE infrastructure
-                    // for free.
-                    const sessionCode = createSession(process.env.OPENAI_API_KEY, 'far_field', 'bilingual');
-                    lastRtmsSessionCode = sessionCode;
-                    console.log(`RTMS: created bilingual caption session ${sessionCode} for stream ${streamId}`);
-                    console.log(`RTMS: view captions at /display?session=${sessionCode}`);
-
-                    const pipeline = createCaptionPipeline(streamId, sessionCode);
-
-                    // Try to fetch the caption token automatically so the host
-                    // doesn't paste it each meeting. Falls back silently to
-                    // manual paste if this doesn't work.
-                    console.log(`payload: ${JSON.stringify(payload)}`);
+                    // Register the stream. It only gets a caption pipeline
+                    // once a session claims it (see connectZoomAudio).
                     const meetingId = payload.payload && (payload.payload.meeting_id || payload.payload.meeting_uuid);
-                    console.log(`CAPTION TOKEN [${sessionCode}]: meeting_id=${JSON.stringify(payload.payload && payload.payload.meeting_id)} meeting_uuid=${JSON.stringify(payload.payload && payload.payload.meeting_uuid)} OAuthTokenPresent=${!!zoomAccessToken}`);
-                    if (!zoomAccessToken) {
-                        console.error(`CAPTION TOKEN [${sessionCode}]: SKIPPED -- Zoom OAuth access token is missing (server restart/deploy after authorization will currently cause this)`);
-                    } else if (!meetingId) {
-                        console.error(`CAPTION TOKEN [${sessionCode}]: SKIPPED -- RTMS webhook contained no meeting_id or meeting_uuid`);
+                    rtmsStreamInfo.set(streamId, { sessionCode: null, meetingId, startedAt: Date.now() });
+                    const waitingCode = takeWaitingZoomSession();
+                    if (waitingCode) {
+                        attachRtmsStream(streamId, waitingCode);
                     } else {
-                        fetchZoomCaptionUrl(pipeline, meetingId, zoomAccessToken);
+                        console.log(`RTMS: stream ${streamId} started -- no session yet. Start one with "Zoom meeting" as the audio input.`);
                     }
+                    const sessionCode = waitingCode || '(unclaimed)';
 
+                    // Look the pipeline up per frame, so audio flows the
+                    // moment a session claims this stream -- and stops if
+                    // that session ends.
                     client.onAudioData((data, size, timestamp, metadata) => {
-                        feedPipelineAudio(pipeline, data);
+                        const pipeline = rtmsCaptionPipelines.get(streamId);
+                        if (pipeline) feedPipelineAudio(pipeline, data);
                     });
 
                     // the SDK's DEFAULT audio format is compressed Opus at 48kHz stereo -- not the simple L16/16kHz/mono raw PCM
@@ -1167,10 +1356,7 @@ const server = http.createServer((req, res) => {
                     return;
                 }
 
-                // For now, just log it -- storing/using this token for further
-                // API calls is a later step once the basic OAuth flow is proven
-                // to work end to end.
-                zoomAccessToken = tokenData.access_token;
+                storeZoomTokens(tokenData);
                 console.log('Zoom OAuth success. Scopes granted:', tokenData.scope);
 
                 res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -1285,7 +1471,10 @@ wss.on('connection', (ws, req) => {
             const entry = session.listenerSockets[id];
             if (!entry) return;
             // Translated audio is pushed as binary over this same socket.
-            if (msg.type === 'request_audio') entry.wantsAudio = true;
+            if (msg.type === 'request_audio') {
+                entry.wantsAudio = true;
+                console.log(`[${sessionCode}] AUDIO checkpoint 2: listener ${id} (${language}) asked for audio`);
+            }
             if (msg.type === 'stop_audio') entry.wantsAudio = false;
         });
 
@@ -1301,6 +1490,11 @@ function endSession(sessionCode) {
     session.ended = true;
     if (session.leaderTeardownTimer) clearTimeout(session.leaderTeardownTimer);
     teardownCaptionPipeline('leader-' + sessionCode);
+    // Release any Zoom stream this session claimed (it can be claimed again).
+    for (const [streamId, info] of rtmsStreamInfo) {
+        if (info.sessionCode === sessionCode) { teardownCaptionPipeline(streamId); info.sessionCode = null; }
+    }
+    if (zoomWaitingSession && zoomWaitingSession.sessionCode === sessionCode) zoomWaitingSession = null;
     const endMessage = `data: ${JSON.stringify({ type: 'session_ended' })}\n\n`;
     [...session.clients.english, ...session.clients.spanish].forEach(client => {
         try { client.write(endMessage); } catch (e) {}

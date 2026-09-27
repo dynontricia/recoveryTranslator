@@ -154,4 +154,4 @@ vite.config.ts.timestamp-*
 .env
 node_modules
 /.idea/
-data/
+/data/

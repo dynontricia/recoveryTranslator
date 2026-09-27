@@ -6,65 +6,81 @@
     <title>Recovery Translator for Zoom</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            padding: 20px; color: #1a202c; background: #f7fafc;
+            padding: 16px; color: #1a202c; background: #f7fafc;
+            display: flex; flex-direction: column; gap: 12px;
         }
-        h1 { font-size: 18px; margin-bottom: 12px; }
-        .status {
-            padding: 12px 14px; border-radius: 8px; font-size: 14px;
-            margin-bottom: 16px; line-height: 1.5;
-        }
+        h1 { font-size: 17px; }
+        .status { padding: 10px 12px; border-radius: 8px; font-size: 13px; line-height: 1.5; }
         .status.ok { background: #f0fff4; border: 1px solid #9ae6b4; color: #22543d; }
         .status.err { background: #fff5f5; border: 1px solid #fc8181; color: #742a2a; }
         .status.pending { background: #ebf8ff; border: 1px solid #90cdf4; color: #2c5282; }
+        .row { display: flex; gap: 8px; }
         button {
-            width: 100%; padding: 12px; border: none; border-radius: 8px;
-            font-size: 15px; font-weight: 600; cursor: pointer; margin-bottom: 10px;
+            flex: 1; padding: 10px; border: none; border-radius: 8px;
+            font-size: 14px; font-weight: 600; cursor: pointer;
         }
-        .btn-start { background: #38a169; color: white; }
-        .btn-stop { background: #e53e3e; color: white; }
-        .btn-turn { background: #4f46e5; color: white; }
-        .btn-turn.active { background: #d97706; }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-start { background: #38a169; color: #fff; }
+        .btn-stop { background: #e53e3e; color: #fff; }
+        .toggle button { background: #e2e8f0; color: #1a202c; font-weight: 500; }
+        .toggle button.on { background: #4f46e5; color: #fff; }
+        button:disabled { opacity: .5; cursor: not-allowed; }
+        #captions { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+        .cap-label { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #718096; }
+        .cap-box {
+            flex: 1; min-height: 80px; overflow-y: auto; background: #fff;
+            border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 10px 12px;
+            font-size: 17px; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word;
+        }
+        #cap-es-wrap .cap-box { background: #e6fffa; border-color: #b2f5ea; }
+        .cap-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
+        details { font-size: 11px; color: #718096; }
         pre {
-            background: #1a202c; color: #68d391; font-size: 11px; padding: 10px;
-            border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+            margin-top: 6px; background: #1a202c; color: #68d391; font-size: 11px; padding: 8px;
+            border-radius: 6px; max-height: 120px; overflow: auto; white-space: pre-wrap; word-break: break-word;
         }
     </style>
 </head>
 <body>
 <h1>Recovery Translator</h1>
-<div class="status pending" id="status">Loading...</div>
-<button class="btn-start" id="start-btn" onclick="doStartRTMS()" disabled>Start captions (RTMS)</button>
-<button class="btn-stop" id="stop-btn" onclick="doStopRTMS()" disabled>Stop captions</button>
+<div class="status pending" id="status">Loading…</div>
 
-<div class="status ok" id="session-info" style="display:none"></div>
-
-<div id="caption-url-box" style="display:none">
-    <p style="font-size:13px;color:#4a5568;line-height:1.5;margin-bottom:8px">
-        To show captions in Zoom's own caption bar: in the meeting toolbar open the
-        <strong>Captions</strong> menu → <strong>Set up manual captioner</strong> →
-        <strong>Copy the API token</strong>, then paste it here.
-    </p>
-    <input type="text" id="caption-url-input" placeholder="https://wmcapi.zoom.us/closedcaption?..."
-           style="width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:8px;font-size:13px;margin-bottom:8px"/>
-    <button class="btn-turn" onclick="saveCaptionUrl()">Send captions to Zoom</button>
+<div class="row" id="controls" style="display:none">
+    <button class="btn-start" id="start-btn" onclick="startCaptions()">Start captions</button>
+    <button class="btn-stop" id="stop-btn" onclick="stopCaptions()" disabled>Stop captions</button>
 </div>
 
-<div class="status ok" id="dual-feed-note" style="display:none">
-    Both English and Spanish run continuously — no need to switch when someone speaks Spanish.
+<div class="row toggle" id="display-toggle" style="display:none">
+    <button id="show-en" class="on" onclick="setDisplay('english')">English</button>
+    <button id="show-both" onclick="setDisplay('both')">English + Español</button>
 </div>
 
-<pre id="log"></pre>
+<div id="captions" style="display:none">
+    <div class="cap-wrap" id="cap-en-wrap">
+        <div class="cap-label">English</div>
+        <div class="cap-box" id="cap-en"></div>
+    </div>
+    <div class="cap-wrap" id="cap-es-wrap" style="display:none">
+        <div class="cap-label">Español</div>
+        <div class="cap-box" id="cap-es"></div>
+    </div>
+</div>
+
+<details>
+    <summary>Details</summary>
+    <pre id="log"></pre>
+</details>
 
 <script src="https://appssdk.zoom.us/sdk.js"></script>
 <script>
-    // Note: the SDK defines window.zoomSdk globally -- do not redeclare it
-    // with "let zoomSdk", that throws a redeclaration error.
+    // The SDK defines window.zoomSdk globally -- don't redeclare it.
     const sdk = window.zoomSdk;
-    let currentSessionCode = null;
-    let spanishTurnActive = false;
+    let sessionCode = null, sessionMode = 'bilingual';
+    let display = 'english';
+    let enSource = null, esSource = null;
+    let findTimer = null, audioTimer = null;
 
     function setStatus(cls, text) {
         const el = document.getElementById('status');
@@ -74,119 +90,164 @@
     function log(msg) {
         const el = document.getElementById('log');
         el.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
+        el.scrollTop = el.scrollHeight;
     }
 
     async function init() {
         try {
-            // The capabilities list here must match the Zoom App SDK APIs
-            // selected in the console (Features > Surface / Zoom App SDK).
-            const configResponse = await sdk.config({
-                capabilities: ['startRTMS', 'stopRTMS'],
-                version: '0.16'
-            });
-            log('sdk.config() succeeded. Running context: ' + configResponse.runningContext);
-            setStatus('ok', 'Connected to Zoom. Ready to start captions.');
-            document.getElementById('start-btn').disabled = false;
-        } catch (error) {
-            log('sdk.config() failed: ' + error.message);
-            setStatus('err', 'Not running inside Zoom (or the app isn\'t authorized yet). ' +
-                'This page is meant to be opened from the Apps button inside a live Zoom meeting.');
+            const cfg = await sdk.config({ capabilities: ['startRTMS', 'stopRTMS'], version: '0.16' });
+            log('Connected to Zoom. Context: ' + cfg.runningContext);
+        } catch (err) {
+            log('sdk.config() failed: ' + err.message);
+            setStatus('err', 'This page runs inside a Zoom meeting. Open it from Apps → Recovery Translator.');
+            return;
         }
+        findSession();
     }
 
-    async function doStartRTMS() {
+    // Look for the session started with "A Zoom meeting" as its audio source.
+    async function findSession() {
         try {
-            log('Calling sdk.startRTMS()...');
-            const res = await sdk.startRTMS();
-            log('startRTMS response: ' + JSON.stringify(res));
-            setStatus('ok', 'RTMS started -- looking up your caption session...');
-            document.getElementById('start-btn').disabled = true;
-            document.getElementById('stop-btn').disabled = false;
-            findSessionCode();
-        } catch (error) {
-            log('startRTMS FAILED: ' + error.message);
-            setStatus('err', 'Could not start RTMS: ' + error.message);
-        }
-    }
-
-    // The startRTMS() response doesn't include a session code -- our server
-    // creates one the moment the meeting.rtms_started webhook lands, which
-    // happens moments after this call succeeds. Poll briefly for it.
-    async function findSessionCode(attempt) {
-        attempt = attempt || 0;
-        try {
-            const res = await fetch('/zoom/latest-session');
+            const res = await fetch('/zoom/current-session');
             const data = await res.json();
             if (data.sessionCode) {
-                currentSessionCode = data.sessionCode;
-                const link = `${location.origin}/display?session=${currentSessionCode}`;
-                const info = document.getElementById('session-info');
-                info.style.display = '';
-                info.innerHTML = `Captions live. <a href="${link}" target="_blank">${link}</a>`;
-                document.getElementById('dual-feed-note').style.display = '';
-                document.getElementById('caption-url-box').style.display = '';
-                log('Found caption session: ' + currentSessionCode);
-                setStatus('ok', 'Captions are live for session ' + currentSessionCode + '.');
+                clearTimeout(findTimer);
+                showSession(data);
                 return;
             }
-        } catch (error) {
-            log('Session lookup failed: ' + error.message);
-        }
-        if (attempt < 10) {
-            setTimeout(() => findSessionCode(attempt + 1), 500);
-        } else {
-            log('Gave up looking for a caption session after 5 seconds.');
-            setStatus('err', 'RTMS started, but no caption session showed up on our server within 5 seconds. ' +
-                'Check the Railway logs for "RTMS: created bilingual caption session" -- if it never appears, ' +
-                'the meeting.rtms_started webhook likely never fired.');
-        }
+        } catch (err) { log('Session lookup failed: ' + err.message); }
+        setStatus('pending', `No session is waiting for Zoom audio. Go to ${location.origin}, start a session, ` +
+            `and choose "A Zoom meeting" as the audio source. This panel will pick it up automatically.`);
+        findTimer = setTimeout(findSession, 3000);
     }
 
-    async function saveCaptionUrl() {
-        if (!currentSessionCode) return;
-        const input = document.getElementById('caption-url-input');
-        const captionUrl = input.value.trim();
-        if (!captionUrl) { log('Paste the Zoom caption API token first.'); return; }
+    function showSession(data) {
+        unsubscribe();
+        sessionCode = data.sessionCode;
+        sessionMode = data.mode;
+        log(`Session ${sessionCode} (${sessionMode})`);
+        document.getElementById('controls').style.display = '';
+        document.getElementById('captions').style.display = '';
+        // Spanish is only offered when the session produces it.
+        const bilingual = sessionMode !== 'transcript_only';
+        document.getElementById('display-toggle').style.display = bilingual ? '' : 'none';
+        if (!bilingual) display = 'english';
+        subscribe();
+        if (data.audioConnected) {
+            setCaptionsRunning(true);
+        } else {
+            setStatus('pending', `Session ${sessionCode} is ready. Tap Start captions.`);
+        }
+        watchAudio();
+    }
+
+    async function startCaptions() {
+        document.getElementById('start-btn').disabled = true;
         try {
-            const res = await fetch('/zoom/caption-url', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionCode: currentSessionCode, captionUrl })
+            // Tell the server this session wants Zoom's audio, then start it.
+            const res = await fetch('/zoom/connect', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionCode })
             });
             const data = await res.json();
-            if (res.ok) {
-                log('Zoom caption URL saved -- captions will now appear in Zoom too.');
-                setStatus('ok', 'Captions are now posting to Zoom\'s caption bar.');
-                document.getElementById('caption-url-box').style.display = 'none';
-            } else {
-                log('Could not save caption URL: ' + (data.error || res.status));
-                setStatus('err', data.error || ('Server returned ' + res.status));
-                // The session code we hold may be stale (RTMS restarted).
-                // Re-look it up so a retry has a chance of succeeding.
-                if (res.status === 404) {
-                    log('Re-checking for a current caption session...');
-                    findSessionCode();
-                }
+            log('Connect: ' + data.status);
+            if (data.status === 'no-session') {
+                setStatus('err', 'That session has ended. Start a new one.');
+                sessionCode = null;
+                findSession();
+                return;
             }
-        } catch (error) {
-            log('Caption URL save failed: ' + error.message);
+            try {
+                const r = await sdk.startRTMS();
+                log('startRTMS: ' + JSON.stringify(r));
+            } catch (err) {
+                // With RTMS auto-start on, the stream may already be running.
+                // The server already claimed it above, so this isn't fatal.
+                log('startRTMS: ' + err.message);
+            }
+            setStatus('pending', 'Connecting to Zoom audio…');
+        } catch (err) {
+            log('Start failed: ' + err.message);
+            setStatus('err', 'Could not start captions: ' + err.message);
+            document.getElementById('start-btn').disabled = false;
         }
     }
 
-    async function doStopRTMS() {
+    async function stopCaptions() {
         try {
-            log('Calling sdk.stopRTMS()...');
-            const res = await sdk.stopRTMS();
-            log('stopRTMS response: ' + JSON.stringify(res));
-            setStatus('ok', 'RTMS stopped.');
-            document.getElementById('start-btn').disabled = false;
-            document.getElementById('stop-btn').disabled = true;
-            document.getElementById('session-info').style.display = 'none';
-            document.getElementById('dual-feed-note').style.display = 'none';
-            currentSessionCode = null;
-        } catch (error) {
-            log('stopRTMS FAILED: ' + error.message);
+            const r = await sdk.stopRTMS();
+            log('stopRTMS: ' + JSON.stringify(r));
+        } catch (err) {
+            log('stopRTMS failed: ' + err.message);
         }
+    }
+
+    // Keeps the status and buttons in step with whether Zoom audio is flowing.
+    function watchAudio() {
+        clearInterval(audioTimer);
+        const check = async () => {
+            if (!sessionCode) return;
+            try {
+                const res = await fetch(`/zoom/session-status?code=${sessionCode}`);
+                const data = await res.json();
+                if (!data.exists) {
+                    clearInterval(audioTimer);
+                    setStatus('err', 'This session has ended.');
+                    document.getElementById('controls').style.display = 'none';
+                    unsubscribe();
+                    sessionCode = null;
+                    findSession();
+                    return;
+                }
+                setCaptionsRunning(data.audioConnected);
+            } catch (e) { /* keep trying */ }
+        };
+        audioTimer = setInterval(check, 2000);
+    }
+
+    function setCaptionsRunning(running) {
+        document.getElementById('start-btn').disabled = running;
+        document.getElementById('stop-btn').disabled = !running;
+        if (running) setStatus('ok', `Captions are live · session ${sessionCode}`);
+        else if (sessionCode) setStatus('pending', `Session ${sessionCode} is ready. Tap Start captions.`);
+    }
+
+    function setDisplay(mode) {
+        display = mode;
+        document.getElementById('show-en').classList.toggle('on', mode === 'english');
+        document.getElementById('show-both').classList.toggle('on', mode === 'both');
+        subscribe();
+    }
+
+    // Each box streams its language from the server -- the same feed the
+    // display page and listeners use. English stays connected; the toggle
+    // only adds or removes Spanish, so English on screen is never wiped.
+    function subscribe() {
+        if (!sessionCode) return;
+        if (!enSource) enSource = attach('english', 'cap-en');
+        const showEs = display === 'both' && sessionMode !== 'transcript_only';
+        document.getElementById('cap-es-wrap').style.display = showEs ? '' : 'none';
+        if (showEs && !esSource) esSource = attach('spanish', 'cap-es');
+        if (!showEs && esSource) { esSource.close(); esSource = null; }
+    }
+
+    function unsubscribe() {
+        if (enSource) { enSource.close(); enSource = null; }
+        if (esSource) { esSource.close(); esSource = null; }
+    }
+
+    function attach(lang, boxId) {
+        const box = document.getElementById(boxId);
+        box.textContent = '';
+        const src = new EventSource(`/stream/${sessionCode}/${lang}`);
+        src.onmessage = (e) => {
+            const data = JSON.parse(e.data);
+            if (data.type === 'session_ended') { box.innerText += '\n\n[Session ended]'; src.close(); return; }
+            if (!data.text) return;
+            box.innerText += data.text;
+            box.scrollTop = box.scrollHeight;
+        };
+        return src;
     }
 
     document.addEventListener('DOMContentLoaded', init);

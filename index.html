@@ -186,26 +186,39 @@
             <label>OpenAI API key</label>
             <input type="password" id="api-key" placeholder="sk-..."/>
 
-            <label>How are people speaking into this session?</label>
-            <select id="mic-distance">
-                <option value="far_field" selected>The phone or mic is across the room (Owl, conference mic, speakerphone on a table)</option>
-                <option value="near_field">Someone is holding the phone or speaking close to it (headset, hand-held, podium mic near the mouth)</option>
-            </select>
-
             <label>What does this session need?</label>
             <select id="session-mode">
                 <option value="bilingual" selected>Full translation — English captions and a live Spanish translation</option>
                 <option value="transcript_only">English captions only — no Spanish translation</option>
             </select>
 
-            <label>Audio input</label>
-            <select id="input-device">
-                <option value="">Default microphone</option>
+            <label>Where is the audio coming from?</label>
+            <select id="audio-source" onchange="updateAudioSourceFields()">
+                <option value="device" selected>This computer — a microphone, or system audio (BlackHole)</option>
+                <option value="zoom">A Zoom meeting — through the Recovery Translator Zoom app</option>
             </select>
-            <button class="link-btn" type="button" onclick="loadInputDevices()" style="margin:-8px 0 12px">Load audio devices (pick BlackHole to caption system audio)</button>
+
+            <div id="device-fields">
+                <label>Input device</label>
+                <select id="input-device">
+                    <option value="">Default microphone</option>
+                </select>
+                <button class="link-btn" type="button" onclick="loadInputDevices()" style="margin:-8px 0 12px">Load audio devices (pick BlackHole to caption system audio)</button>
+
+                <label>How are people speaking into this session?</label>
+                <select id="mic-distance">
+                    <option value="far_field" selected>The phone or mic is across the room (Owl, conference mic, speakerphone on a table)</option>
+                    <option value="near_field">Someone is holding the phone or speaking close to it (headset, hand-held, podium mic near the mouth)</option>
+                </select>
+            </div>
+
+            <p class="small" id="zoom-fields-hint" style="display:none;text-align:left;margin:-6px 0 16px">
+                After you start, open <strong>Apps → Recovery Translator</strong> in your Zoom meeting and tap
+                <strong>Start captions</strong>. Captions begin as soon as Zoom's audio connects.
+            </p>
 
             <p class="small" style="margin-top:4px;margin-bottom:20px;text-align:left">
-                English is captioned live for the room, and Spanish attendees get a live Spanish translation.
+                English is captioned live, and Spanish attendees get a live Spanish translation.
                 Both run the whole time — no need to switch when someone speaks Spanish.
             </p>
             <button class="btn btn-primary" onclick="createSession()">Start session</button>
@@ -282,6 +295,8 @@
 
             <button class="btn btn-secondary" id="audio-toggle-btn" onclick="toggleAudio()">🔊 Hear translation</button>
             <p class="small" id="audio-status"></p>
+            <p class="small" id="audio-debug" style="font-family:ui-monospace,monospace;color:#718096"></p>
+            <button class="link-btn" type="button" onclick="playTestSound()">No sound? Play a test sound</button>
 
         </div>
     </div>
@@ -374,6 +389,8 @@
     let sessionCode = null, listenerLanguage = null, currentRole = null;
     let signalingWs = null, eventSource = null;
     let sessionMode = 'bilingual'; // 'bilingual' | 'transcript_only'
+    let sessionAudioSource = 'device'; // 'device' | 'zoom'
+    let zoomStatusTimer = null;
 
     // Leader: audio capture + the leader's own caption subscriptions
     let micStream = null, captureCtx = null, leaderLive = false;
@@ -381,7 +398,7 @@
 
     // Listener: translated-audio playback
     let listenerId = null, listenerEnded = false;
-    let playCtx = null, playHead = 0, audioOn = false;
+    let playCtx = null, playHead = 0, audioOn = false, audioChunksReceived = 0;
 
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
@@ -454,6 +471,12 @@
     function getResumeState() { try { return JSON.parse(localStorage.getItem('rt-session')); } catch(e){ return null; } }
 
     // ── LEADER ──────────────────────────────────────────
+    function updateAudioSourceFields() {
+        const zoom = document.getElementById('audio-source').value === 'zoom';
+        document.getElementById('device-fields').style.display = zoom ? 'none' : '';
+        document.getElementById('zoom-fields-hint').style.display = zoom ? '' : 'none';
+    }
+
     async function loadInputDevices() {
         try {
             // Device labels only appear after permission is granted once.
@@ -478,17 +501,19 @@
         let apiKey = document.getElementById('api-key').value.trim();
         const micDistance = document.getElementById('mic-distance').value;
         const mode = document.getElementById('session-mode').value;
+        const audioSource = document.getElementById('audio-source').value;
         if (!accessCode) { showError('leader-error', 'Please enter the access code.'); return; }
         if (!apiKey) apiKey = 'default-api-key';
         try {
             const res = await fetch('/session/create', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ accessCode, apiKey, micDistance, mode })
+                body: JSON.stringify({ accessCode, apiKey, micDistance, mode, audioSource })
             });
             const data = await res.json();
             if (!res.ok) { showError('leader-error', data.error || 'Failed to create session.'); return; }
             sessionCode = data.sessionCode;
             sessionMode = mode;
+            sessionAudioSource = audioSource;
             saveResumeState({ role: 'leader', sessionCode });
             await startLeaderSession(sessionCode);
         } catch (err) { showError('leader-error', 'Could not start the session: ' + err.message); }
@@ -510,11 +535,39 @@
         subscribeLeaderCaptions(code);
         openLeaderSignaling(code);
         show('screen-leader-live');
+
+        // Zoom sessions get their audio from Zoom (RTMS), not this computer.
+        const zoom = sessionAudioSource === 'zoom';
+        document.getElementById('leader-level').parentElement.style.display = zoom ? 'none' : '';
+        if (zoom) {
+            watchZoomAudio(code);
+            return;
+        }
         try {
             await startLeaderAudio();
         } catch (err) {
             setLeaderAudioStatus('Microphone failed: ' + err.message, true);
         }
+    }
+
+    // Shows whether Zoom's audio is reaching the server for this session.
+    function watchZoomAudio(code) {
+        let wasConnected = false;
+        setLeaderAudioStatus('Waiting for Zoom audio — in your meeting open Apps → Recovery Translator → Start captions.');
+        const check = async () => {
+            try {
+                const res = await fetch(`/zoom/session-status?code=${code}`);
+                const data = await res.json();
+                if (data.audioConnected) {
+                    setLeaderAudioStatus('Zoom audio connected.');
+                } else if (wasConnected) {
+                    setLeaderAudioStatus('Zoom audio stopped — tap Start captions in the Zoom app to resume.', true);
+                }
+                wasConnected = data.audioConnected;
+            } catch (e) { /* keep trying */ }
+        };
+        check();
+        zoomStatusTimer = setInterval(check, 3000);
     }
 
     // The leader's boxes show exactly what the server broadcasts -- the same
@@ -609,6 +662,7 @@
 
     function teardownLeader() {
         leaderLive = false; // stops the auto-reconnect
+        if (zoomStatusTimer) { clearInterval(zoomStatusTimer); zoomStatusTimer = null; }
         if (signalingWs) { signalingWs.onclose = null; signalingWs.close(); signalingWs = null; }
         if (captureCtx) { captureCtx.close(); captureCtx = null; }
         if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
@@ -706,6 +760,7 @@
         playCtx = new AudioCtx();
         playCtx.resume();
         playHead = 0;
+        audioChunksReceived = 0;
         audioOn = true;
         if (signalingWs && signalingWs.readyState === WebSocket.OPEN) {
             signalingWs.send(JSON.stringify({ type: 'request_audio' }));
@@ -737,6 +792,28 @@
         src.start(startAt);
         playHead = startAt + audioBuffer.duration;
         document.getElementById('audio-status').textContent = '';
+        audioChunksReceived++;
+        document.getElementById('audio-debug').textContent =
+            `Received ${audioChunksReceived} audio chunk(s) · player ${playCtx.state}`;
+    }
+
+    // Plays a beep made on THIS device -- no server, no translation involved.
+    // If you can't hear it, the problem is the phone's sound settings, not
+    // the app. If you hear it but not the translation, look at the checkpoints.
+    function playTestSound() {
+        if (navigator.audioSession) navigator.audioSession.type = 'playback';
+        const ctx = playCtx || new AudioCtx();
+        ctx.resume();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = 660;
+        gain.gain.value = 0.3;
+        osc.connect(gain).connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.5);
+        document.getElementById('audio-debug').textContent =
+            `Test sound played (player ${ctx.state}). Didn't hear it? Check the phone, not the app.`;
+        if (!playCtx) setTimeout(() => ctx.close(), 1000);
     }
 
     // ── Tab resume ───────────────────────────────────────
