@@ -377,6 +377,7 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
 
         // 1) Spanish captions: this session's translated output.
         if (ev.type === 'session.output_transcript.delta' && ev.delta && broadcastLanguage === 'spanish') {
+            checkSourceTranscriptStall(pipeline);
             if (!transcriptOnly) {
                 broadcast(pipeline.sessionCode, 'spanish', ev.delta);
                 queueZoomCaption(pipeline, ev.delta, 'es-ES');
@@ -416,6 +417,8 @@ function deeplBaseUrl(key) {
 
 // sourceLanguage is only a franc hint ('spanish', 'close call', ...), so
 // DeepL auto-detects the source; that also handles mixed English/Spanish.
+const DEEPL_TIMEOUT_MS = 4000;
+
 async function translateToEnglish(session, transcript, sourceLanguage) {
     const key = process.env.DEEPL_API_KEY;
     if (!key) {
@@ -423,18 +426,27 @@ async function translateToEnglish(session, transcript, sourceLanguage) {
         return;
     }
 
-    const response = await fetch(`${deeplBaseUrl(key)}/v2/translate`, {
-        method: 'POST',
-        headers: {
-            'Authorization': `DeepL-Auth-Key ${key}`,
-            'Content-Type': 'application/json',
-            'User-Agent': 'recovery-translator'
-        },
-        body: JSON.stringify({
-            text: [transcript],
-            target_lang: 'EN-US'
-        })
-    });
+    let response;
+    try {
+        response = await fetch(`${deeplBaseUrl(key)}/v2/translate`, {
+            // A hung request would block every English caption queued behind
+            // it (they're released in order), so give up after a few seconds.
+            signal: AbortSignal.timeout(DEEPL_TIMEOUT_MS),
+            method: 'POST',
+            headers: {
+                'Authorization': `DeepL-Auth-Key ${key}`,
+                'Content-Type': 'application/json',
+                'User-Agent': 'recovery-translator'
+            },
+            body: JSON.stringify({
+                text: [transcript],
+                target_lang: 'EN-US'
+            })
+        });
+    } catch (err) {
+        console.error(`text translation failed: ${err.name === 'TimeoutError' ? `no reply from DeepL in ${DEEPL_TIMEOUT_MS}ms` : err.message}`);
+        return;
+    }
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -741,6 +753,12 @@ const SOURCE_IDLE_FLUSH_MS = 1500;
 const SOURCE_ENDINGS = ['', ' ', '\n', ',', '.', '!', '?'];
 
 function handleSourceTranscriptDelta(pipeline, delta) {
+    const now = Date.now();
+    if (pipeline.sourceStallWarned) {
+        console.log(`[${pipeline.sessionCode}] SOURCE TRANSCRIPT resumed after ${((now - pipeline.lastSourceDeltaAt) / 1000).toFixed(1)}s of silence`);
+        pipeline.sourceStallWarned = false;
+    }
+    pipeline.lastSourceDeltaAt = now;
     const words = pipeline.sourceBuffer.trim().split(/\s+/).filter(Boolean).length;
     if (words >= SOURCE_CHUNK_MIN_WORDS && delta[0] === ' ') {
         // A new word is starting: cut here. Snapshot and reset BEFORE any
@@ -783,6 +801,21 @@ function classifyChunk(chunk) {
     return { translate: false, reason: 'english', ranked };
 }
 
+// Detects the one failure our code can't fix: OpenAI still translating
+// (Spanish flowing) but its input transcript -- the English source -- has
+// gone quiet. If this fires often, that's the case for a separate
+// transcription session.
+const SOURCE_STALL_MS = 8000;
+
+function checkSourceTranscriptStall(pipeline) {
+    const now = Date.now();
+    if (!pipeline.lastSourceDeltaAt) pipeline.lastSourceDeltaAt = now;
+    if (!pipeline.sourceStallWarned && now - pipeline.lastSourceDeltaAt > SOURCE_STALL_MS) {
+        pipeline.sourceStallWarned = true;
+        console.warn(`[${pipeline.sessionCode}] SOURCE TRANSCRIPT STALLED: Spanish is still arriving, but OpenAI has sent no English source text for ${((now - pipeline.lastSourceDeltaAt) / 1000).toFixed(1)}s`);
+    }
+}
+
 function emitSourceChunk(pipeline, chunk) {
     if (!chunk || !chunk.trim()) return;
     const session = sessions[pipeline.sessionCode];
@@ -797,10 +830,17 @@ function emitSourceChunk(pipeline, chunk) {
     }
     const startedAt = Date.now();
     emitEnglishInOrder(pipeline,
-        translateToEnglish(session, chunk, verdict.reason).then(t => {
-            console.log(`[${pipeline.sessionCode}] translated in ${Date.now() - startedAt}ms: ${chunk.trim()} -> ${t}`);
-            return t ? ' ' + t : t;
-        }));
+        translateToEnglish(session, chunk, verdict.reason)
+            .catch(() => null)
+            .then(t => {
+                if (!t) {
+                    // Showing the untranslated words beats silently losing them.
+                    console.log(`[${pipeline.sessionCode}] translation FAILED after ${Date.now() - startedAt}ms -- showing original: ${chunk.trim()}`);
+                    return chunk;
+                }
+                console.log(`[${pipeline.sessionCode}] translated in ${Date.now() - startedAt}ms: ${chunk.trim()} -> ${t}`);
+                return ' ' + t;
+            }));
 }
 
 // Emits English strictly in the order chunks were cut, even though a
