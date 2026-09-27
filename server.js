@@ -222,9 +222,9 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
                 audio: {
                     input: {
                         transcription: {
-                            model: 'gpt-transcribe'
+                            model: 'gpt-realtime-whisper'
                         },
-                        noise_reduction: null
+                        noise_reduction: {type: 'far_field'}
                     },
                     output: {
                         language: targetLanguage
@@ -266,6 +266,7 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
         //    spoken) goes through the franc chunker -- English passes
         //    through, Spanish chunks are translated to English.
         if (ev.type === 'session.input_transcript.delta' && ev.delta && wsKey === pipeline.sourceTranscriptWsKey) {
+            console.log(ev.delta);
             handleSourceTranscriptDelta(pipeline, ev.delta);
             return;
         }
@@ -276,32 +277,41 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
 }
 
 
-async function translateToEnglish(session, transcript, sourceLanguage) {
-    const response = await fetch('https://api.openai.com/v1/responses', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${session.apiKey}`,
-            'Content-Type': 'application/json',
-            'OpenAI-Safety-Identifier': 'recovery-translator'
-        },
-        body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            instructions: `Translate to English. If the input is already English, return it unchanged. If it contains both English and Spanish, translate the Spanish into natural English. Return only the final English text.`,
-            input: `Transcript: ${transcript}`,
-            max_output_tokens: 100
-        })
-    });
+// DeepL Free keys end in ":fx" and must use the api-free host.
+function deeplBaseUrl(key) {
+    return key.endsWith(':fx') ? 'https://api-free.deepl.com' : 'https://api.deepl.com';
+}
 
-    const data = await response.json();
-    if (!response.ok) {
-        console.error(`text translation failed:`, JSON.stringify(data).slice(0, 1000));
+// sourceLanguage is only a franc hint ('spanish', 'close call', ...), so
+// DeepL auto-detects the source; that also handles mixed English/Spanish.
+async function translateToEnglish(session, transcript, sourceLanguage) {
+    const key = process.env.DEEPL_API_KEY;
+    if (!key) {
+        console.error('text translation failed: DEEPL_API_KEY is not set');
         return;
     }
 
-    return (data.output || [])
-        .flatMap(item => item.content || [])
-        .filter(part => part.type === 'output_text')
-        .map(part => part.text || '')
+    const response = await fetch(`${deeplBaseUrl(key)}/v2/translate`, {
+        method: 'POST',
+        headers: {
+            'Authorization': `DeepL-Auth-Key ${key}`,
+            'Content-Type': 'application/json',
+            'User-Agent': 'recovery-translator'
+        },
+        body: JSON.stringify({
+            text: [transcript],
+            target_lang: 'EN-US'
+        })
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        console.error(`text translation failed (${response.status}):`, JSON.stringify(data).slice(0, 1000));
+        return;
+    }
+
+    return (data.translations || [])
+        .map(t => t.text || '')
         .join('')
         .trim();
 }
@@ -1045,6 +1055,7 @@ const server = http.createServer((req, res) => {
                     // Try to fetch the caption token automatically so the host
                     // doesn't paste it each meeting. Falls back silently to
                     // manual paste if this doesn't work.
+                    console.log(`payload: ${JSON.stringify(payload)}`);
                     if (zoomAccessToken && payload.payload && payload.payload.meeting_uuid) {
                         fetchZoomCaptionUrl(pipeline, payload.payload.meeting_uuid, zoomAccessToken);
                     }
