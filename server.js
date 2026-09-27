@@ -142,12 +142,10 @@ function flushZoomCaption(pipeline, lang) {
     if (text) postZoomCaption(pipeline, text, lang);
 }
 
-async function postZoomCaption(pipeline, text, lang, seqOverride = null) {
+async function postZoomCaption(pipeline, text, lang) {
     if (!pipeline.zoomCaptionUrl || !text || !text.trim()) return;
 
-    // Normal captions advance the sequence. A supplied seqOverride is used only
-    // by the controlled overwrite diagnostic so we can test current Zoom behavior.
-    const seq = seqOverride == null ? pipeline.captionSeq++ : seqOverride;
+    const seq = pipeline.captionSeq++;
     const sep = pipeline.zoomCaptionUrl.includes('?') ? '&' : '?';
     const url = `${pipeline.zoomCaptionUrl}${sep}seq=${seq}&lang=${lang}`;
 
@@ -174,41 +172,6 @@ async function postZoomCaption(pipeline, text, lang, seqOverride = null) {
         delayMs = Math.min(delayMs * 2, 1600);
     }
     console.error(`Zoom caption POST gave up after ~5s (seq ${seq})`);
-}
-
-// TEMPORARY DIAGNOSTIC: prove whether current Zoom captioning replaces text
-// when the same seq is POSTed more than once. Runs once per RTMS pipeline.
-async function testZoomCaptionOverride(pipeline) {
-    if (!pipeline.zoomCaptionUrl || pipeline.zoomOverrideTestRun) return;
-    pipeline.zoomOverrideTestRun = true;
-
-    // Keep this far away from the normal counter so the diagnostic cannot collide
-    // with ordinary captions during a realistic meeting.
-    const seq = 900000000;
-    const tests = [
-        'TEST: The quick brown',
-        'TEST: The quick brown fox jumps',
-        'TEST: The quick brown fox jumps over the lazy dog.'
-    ];
-
-    console.log(`ZOOM OVERRIDE TEST [${pipeline.sessionCode}]: starting with repeated seq=${seq}`);
-    for (const text of tests) {
-        const sep = pipeline.zoomCaptionUrl.includes('?') ? '&' : '?';
-        const url = `${pipeline.zoomCaptionUrl}${sep}seq=${seq}&lang=en-US`;
-        try {
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-                body: text
-            });
-            const body = await res.text().catch(() => '');
-            console.log(`ZOOM OVERRIDE TEST [${pipeline.sessionCode}]: seq=${seq} HTTP ${res.status} text=${JSON.stringify(text)} response=${JSON.stringify(body).slice(0, 500)}`);
-        } catch (err) {
-            console.error(`ZOOM OVERRIDE TEST [${pipeline.sessionCode}]: request failed:`, err.message);
-        }
-        await new Promise(r => setTimeout(r, 2000));
-    }
-    console.log(`ZOOM OVERRIDE TEST [${pipeline.sessionCode}]: complete -- check Zoom to see whether one caption changed in place or multiple captions appeared.`);
 }
 
 function toAudioBuffer(data) {
@@ -279,7 +242,6 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
 
         if (ev.type === 'session.updated') {
             pipeline[readyKey] = true;
-            pipeline.translateReconnectAttempts = 0;
             console.log(`[${pipeline.sessionCode}] translate(${targetLanguage}): live`);
             return;
         }
@@ -311,22 +273,7 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
     });
 
     ws.on('error', (err) => console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}) WS error:`, err.message));
-    ws.on('close', (code, reason) => {
-        pipeline[readyKey] = false;
-        console.error(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): CLOSED code=${code} reason=${reason ? reason.toString() : ''}`);
-
-        // A translation socket also carries our Whisper input transcript, so a
-        // dead socket means captions silently stop. Reconnect unless teardown was
-        // intentional. Back off a little more after each consecutive failure.
-        if (!pipeline.shuttingDown) {
-            pipeline.translateReconnectAttempts = (pipeline.translateReconnectAttempts || 0) + 1;
-            const delay = Math.min(1000 * Math.pow(2, pipeline.translateReconnectAttempts - 1), 10000);
-            console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): reconnecting in ${delay}ms`);
-            setTimeout(() => {
-                if (!pipeline.shuttingDown) connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcastLanguage);
-            }, delay);
-        }
-    });
+    ws.on('close', (code) => console.log(`RTMS/OpenAI [${pipeline.sessionCode}] translate(${targetLanguage}): closed. code=${code}`));
 }
 
 
@@ -547,9 +494,6 @@ function createCaptionPipeline(streamKey, sessionCode) {
         esWs: null, esReady: false,
         zoomCaptionUrl: null,
         captionSeq: 1,
-        zoomOverrideTestRun: false,
-        shuttingDown: false,
-        translateReconnectAttempts: 0,
         audioFrameCount: 0,
         sourceBuffer: '',
         sourceIdleTimer: null,
@@ -597,7 +541,6 @@ function feedPipelineAudio(pipeline, data) {
 function teardownCaptionPipeline(streamKey) {
     const pipeline = rtmsCaptionPipelines.get(streamKey);
     if (!pipeline) return;
-    pipeline.shuttingDown = true;
     if (pipeline.sourceIdleTimer) clearTimeout(pipeline.sourceIdleTimer);
     if (pipeline.sourceBuffer) emitSourceChunk(pipeline, pipeline.sourceBuffer);
     // Flush buffered caption text so the last words spoken aren't dropped.
@@ -1019,9 +962,6 @@ const server = http.createServer((req, res) => {
             }
             pipeline.zoomCaptionUrl = captionUrl;
             console.log(`RTMS [${sessionCode}]: Zoom caption URL set -- captions will now also post to Zoom's native caption bar`);
-            // Diagnostic build: the same-sequence overwrite test also runs when
-            // automatic token retrieval failed and the host pasted the URL.
-            setTimeout(() => testZoomCaptionOverride(pipeline), 500);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true }));
         });
