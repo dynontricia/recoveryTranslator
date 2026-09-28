@@ -644,6 +644,7 @@ function createCaptionPipeline(streamKey, sessionCode) {
         captionSeq: 1,
         audioFrameCount: 0,
         enLine: null,            // the English sentence still being spoken
+        enMode: 'english',       // 'english' = stream live, 'spanish' = translate every chunk
         sentenceIdleTimer: null,
         // English captions come from THIS feed's input transcript.
         sourceTranscriptWsKey: 'esWs'
@@ -769,8 +770,9 @@ const wordCount = s => s.trim().split(/\s+/).filter(Boolean).length;
 const leadingSpace = s => (/^\s/.test(s) ? ' ' : '');
 
 // A line is a list of pieces (checked chunks) plus the words still arriving.
+// Words still arriving are hidden while we're in Spanish mode.
 function lineText(line) {
-    return line.pieces.map(p => p.shown).join('') + line.open;
+    return line.pieces.map(p => p.shown).join('') + (line.hideOpen ? '' : line.open);
 }
 
 function sendEnglishLine(pipeline, line) {
@@ -782,6 +784,44 @@ function sendEnglishLine(pipeline, line) {
         session.englishLines.delete(session.englishLines.keys().next().value);
     }
     broadcastEvent(pipeline.sessionCode, 'english', { type: 'line', id: line.id, text });
+}
+
+// ---- Language mode -------------------------------------------------------
+// A speaker who starts in Spanish usually keeps going in Spanish, so the
+// pipeline remembers which language it's in:
+//   'english' -- words stream to the screen live, as they arrive.
+//   'spanish' -- raw words are held back; each ~5-word chunk appears only
+//                once Google has translated it.
+// English -> Spanish: franc's top answer is Spanish (chunk or sentence).
+// Spanish -> English: franc says English AND Spanish scores below this.
+// Anything in between keeps translating. Tune from the scores in the logs.
+const SPANISH_EXIT_MAX = 0.6;
+
+function spanishScore(verdict) {
+    const spa = verdict.ranked.find(([lang]) => lang === 'spa');
+    return spa ? spa[1] : 0;
+}
+
+// Updates the mode from a franc verdict and returns whether to translate.
+function decideLanguage(pipeline, verdict, what) {
+    const top = verdict.ranked[0][0];
+    if (pipeline.enMode === 'spanish') {
+        if (top === 'eng' && spanishScore(verdict) < SPANISH_EXIT_MAX) {
+            setLanguageMode(pipeline, 'english', what, verdict);
+            return false;
+        }
+        return true; // still Spanish, or not sure -- keep translating
+    }
+    if (top === 'spa') setLanguageMode(pipeline, 'spanish', what, verdict);
+    return verdict.translate;
+}
+
+function setLanguageMode(pipeline, mode, what, verdict) {
+    if (pipeline.enMode === mode) return;
+    pipeline.enMode = mode;
+    const scores = verdict.ranked.map(([l, s]) => `${l}=${s.toFixed(2)}`).join(' ');
+    console.log(`[${pipeline.sessionCode}] LANGUAGE MODE -> ${mode.toUpperCase()} (${what}; ${scores})` +
+        (mode === 'spanish' ? ' -- holding raw text, translating every chunk' : ' -- streaming live again'));
 }
 
 function handleSourceTranscriptDelta(pipeline, delta) {
@@ -796,18 +836,21 @@ function handleSourceTranscriptDelta(pipeline, delta) {
 
     let line = pipeline.enLine;
     if (!line) {
-        line = pipeline.enLine = { id: ++session.nextLineId, pieces: [], open: '', sentenceTranslated: false };
+        line = pipeline.enLine = { id: ++session.nextLineId, pieces: [], open: '', sentenceTranslated: false, hideOpen: false };
     }
 
     // A new word is starting and the unchecked words have reached a chunk:
-    // set that chunk aside and check its language, then keep streaming.
+    // set that chunk aside and check its language (this may switch modes).
     if (delta[0] === ' ' && wordCount(line.open) >= CHUNK_WORDS) {
         checkChunk(pipeline, line);
     }
     line.open += delta;
-    sendEnglishLine(pipeline, line);
+    line.hideOpen = pipeline.enMode === 'spanish';
+    // English mode shows every word as it arrives. Spanish mode shows
+    // nothing new until a chunk is translated (checkChunk sends it).
+    if (!line.hideOpen) sendEnglishLine(pipeline, line);
 
-    const total = wordCount(lineText(line));
+    const total = wordCount(line.pieces.map(p => p.raw).join('') + line.open);
     if (/[.!?]["')\]]*\s*$/.test(delta) || total >= SENTENCE_MAX_WORDS) {
         finishSentence(pipeline, line);
     } else {
@@ -818,22 +861,31 @@ function handleSourceTranscriptDelta(pipeline, delta) {
     }
 }
 
-// Freezes the unchecked words into a piece and, if franc says they aren't
-// clearly English, swaps in Google's translation when it comes back.
+// Freezes the unchecked words into a piece and decides what to show:
+// English -> the words themselves; otherwise Google's translation, swapped
+// in when it returns. In Spanish mode the piece stays hidden until then.
 function checkChunk(pipeline, line) {
-    const piece = { raw: line.open, shown: line.open };
+    const hidden = line.hideOpen;
+    const piece = { raw: line.open, shown: hidden ? '' : line.open };
     line.pieces.push(piece);
     line.open = '';
     const verdict = classifyChunk(piece.raw);
     logVerdict(pipeline, 'chunk', verdict, piece.raw);
-    if (!verdict.translate) return;
+    const translate = decideLanguage(pipeline, verdict, 'chunk');
+    line.hideOpen = pipeline.enMode === 'spanish';
+
+    if (!translate) {
+        if (hidden) { piece.shown = piece.raw; sendEnglishLine(pipeline, line); }
+        return;
+    }
     const session = sessions[pipeline.sessionCode];
     const startedAt = Date.now();
     translateToEnglish(session, piece.raw, verdict.reason).catch(() => null).then(t => {
         // The whole-sentence translation wins if it already replaced this line.
-        if (!t || line.sentenceTranslated) return;
-        console.log(`[${pipeline.sessionCode}] chunk translated in ${Date.now() - startedAt}ms: ${piece.raw.trim()} -> ${t}`);
-        piece.shown = leadingSpace(piece.raw) + t;
+        if (line.sentenceTranslated) return;
+        if (t) console.log(`[${pipeline.sessionCode}] chunk translated in ${Date.now() - startedAt}ms: ${piece.raw.trim()} -> ${t}`);
+        // If translation failed, show the original words rather than nothing.
+        piece.shown = t ? leadingSpace(piece.raw) + t : piece.raw;
         sendEnglishLine(pipeline, line);
     });
 }
@@ -844,14 +896,22 @@ function finishSentence(pipeline, line) {
     if (pipeline.enLine === line) pipeline.enLine = null;
     if (pipeline.sentenceIdleTimer) { clearTimeout(pipeline.sentenceIdleTimer); pipeline.sentenceIdleTimer = null; }
     if (line.open) {
-        line.pieces.push({ raw: line.open, shown: line.open });
-        line.open = '';
+        if (line.hideOpen) {
+            // Hidden tail in Spanish mode: run it through the chunk check so
+            // it's revealed (translated or not) even if the sentence check
+            // below decides the sentence is English.
+            checkChunk(pipeline, line);
+        } else {
+            line.pieces.push({ raw: line.open, shown: line.open });
+            line.open = '';
+        }
     }
     const raw = line.pieces.map(p => p.raw).join('');
     if (!raw.trim()) return;
     const verdict = classifyChunk(raw);
     logVerdict(pipeline, 'sentence', verdict, raw);
-    if (!verdict.translate) {
+    const translate = decideLanguage(pipeline, verdict, 'sentence');
+    if (!translate) {
         queueZoomCaption(pipeline, lineText(line), 'en-US');
         return;
     }
