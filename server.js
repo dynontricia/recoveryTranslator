@@ -410,41 +410,34 @@ function connectTranslateWs(pipeline, targetLanguage, wsKey, readyKey, broadcast
 }
 
 
-// DeepL Free keys end in ":fx" and must use the api-free host.
-function deeplBaseUrl(key) {
-    return key.endsWith(':fx') ? 'https://api-free.deepl.com' : 'https://api.deepl.com';
-}
-
-// sourceLanguage is only a franc hint ('spanish', 'close call', ...), so
-// DeepL auto-detects the source; that also handles mixed English/Spanish.
-const DEEPL_TIMEOUT_MS = 4000;
+// Google Cloud Translation (Basic, v2). Source language is auto-detected,
+// so Spanish, English, or mixed chunks all come back as English.
+const TRANSLATE_TIMEOUT_MS = 4000;
 
 async function translateToEnglish(session, transcript, sourceLanguage) {
-    const key = process.env.DEEPL_API_KEY;
+    const key = process.env.GOOGLE_TRANSLATE_API_KEY;
     if (!key) {
-        console.error('text translation failed: DEEPL_API_KEY is not set');
+        console.error('text translation failed: GOOGLE_TRANSLATE_API_KEY is not set');
         return;
     }
 
     let response;
     try {
-        response = await fetch(`${deeplBaseUrl(key)}/v2/translate`, {
+        response = await fetch('https://translation.googleapis.com/language/translate/v2', {
             // A hung request would block every English caption queued behind
             // it (they're released in order), so give up after a few seconds.
-            signal: AbortSignal.timeout(DEEPL_TIMEOUT_MS),
+            signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
             method: 'POST',
             headers: {
-                'Authorization': `DeepL-Auth-Key ${key}`,
-                'Content-Type': 'application/json',
-                'User-Agent': 'recovery-translator'
+                'X-Goog-Api-Key': key, // header, so the key never appears in a URL or log
+                'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-                text: [transcript],
-                target_lang: 'EN-US'
-            })
+            // format: 'text' -- otherwise Google returns HTML-escaped text
+            // (&#39; instead of an apostrophe).
+            body: JSON.stringify({ q: transcript, target: 'en', format: 'text' })
         });
     } catch (err) {
-        console.error(`text translation failed: ${err.name === 'TimeoutError' ? `no reply from DeepL in ${DEEPL_TIMEOUT_MS}ms` : err.message}`);
+        console.error(`text translation failed: ${err.name === 'TimeoutError' ? `no reply from Google in ${TRANSLATE_TIMEOUT_MS}ms` : err.message}`);
         return;
     }
 
@@ -454,10 +447,10 @@ async function translateToEnglish(session, transcript, sourceLanguage) {
         return;
     }
 
-    return (data.translations || [])
-        .map(t => t.text || '')
-        .join('')
-        .trim();
+    const t = data.data && data.data.translations && data.data.translations[0];
+    if (!t) return;
+    if (t.detectedSourceLanguage) console.log(`Google detected source language: ${t.detectedSourceLanguage}`);
+    return (t.translatedText || '').trim();
 }
 
 // Translate a completed non-English transcript to English. This is deliberately
