@@ -376,6 +376,7 @@
     </div>
 </div>
 
+<script src="/captions.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
     // ── Architecture ─────────────────────────────────────
@@ -576,15 +577,9 @@
         if (leaderEnSource) leaderEnSource.close();
         if (leaderEsSource) leaderEsSource.close();
         const attach = (lang, boxId) => {
-            const src = new EventSource(`/stream/${code}/${lang}`);
-            src.onmessage = (e) => {
-                const data = JSON.parse(e.data);
-                if (!data.text) return;
-                const box = document.getElementById(boxId);
-                box.innerText += data.text;
-                box.scrollTop = box.scrollHeight;
-            };
-            return src;
+            const box = document.getElementById(boxId);
+            box.textContent = '';
+            return attachCaptions(`/stream/${code}/${lang}`, box);
         };
         leaderEnSource = attach('english', 'caption-box-en');
         leaderEsSource = sessionMode === 'transcript_only' ? null : attach('spanish', 'caption-box-es');
@@ -689,18 +684,11 @@
         box.textContent = ''; box.style.display = ''; box.style.color = ''; box.style.fontSize = '20px';
 
         if (eventSource) eventSource.close();
-        eventSource = new EventSource(`/stream/${code}/${language}`);
-        eventSource.onmessage = (e) => {
-            const data = JSON.parse(e.data);
-            if (data.type === 'session_ended') {
-                endListenerSession();
-                return;
-            }
-            if (!data.text) return;
-            box.innerText += data.text; box.scrollTop = box.scrollHeight;
-        };
-        eventSource.onerror = () => { document.getElementById('listener-status').textContent = 'Reconnecting...'; };
-        eventSource.onopen = () => { document.getElementById('listener-status').textContent = 'Connected'; };
+        eventSource = attachCaptions(`/stream/${code}/${language}`, box, {
+            onEnded: endListenerSession,
+            onError: () => { document.getElementById('listener-status').textContent = 'Reconnecting...'; },
+            onOpen: () => { document.getElementById('listener-status').textContent = 'Connected'; }
+        });
 
         // Translated audio exists only for the Spanish feed.
         document.getElementById('audio-toggle-btn').style.display = (language === 'spanish') ? '' : 'none';

@@ -103,6 +103,7 @@
     </div>
 </div>
 
+<script src="/captions.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
     const params = new URLSearchParams(location.search);
@@ -140,27 +141,14 @@
         });
         applyStyle();
 
-        function subscribe(lang, boxId, noticeId, isSpanish) {
-            const es = new EventSource(`/stream/${code}/${lang}`);
-            es.onmessage = (e) => {
-                const data = JSON.parse(e.data);
-                if (data.type === 'session_ended') {
-                    document.getElementById(boxId).innerText += '\n\n[Session ended]';
-                    es.close(); return;
-                }
-                if (data.type === 'spanish_turn') {
-                    // Spanish column holds captions + shows the notice; English
-                    // column keeps flowing (it carries the live translation).
-                    if (isSpanish) document.getElementById(noticeId).classList.toggle('active', data.active);
-                    return;
-                }
-                if (!data.text) return;
-                const b = document.getElementById(boxId);
-                b.innerText += data.text; b.scrollTop = b.scrollHeight;
-            };
+        function subscribe(lang, boxId) {
+            const box = document.getElementById(boxId);
+            attachCaptions(`/stream/${code}/${lang}`, box, {
+                onEnded: () => box.appendChild(document.createTextNode('\n\n[Session ended]'))
+            });
         }
-        subscribe('english', 'cap-en', 'notice-en', false);
-        subscribe('spanish', 'cap-es', 'notice-es', true);
+        subscribe('english', 'cap-en');
+        subscribe('spanish', 'cap-es');
     }
 
     function popout(lang) {

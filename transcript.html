@@ -32,17 +32,18 @@
     </style>
 </head>
 <body>
-    <div class="bar">
-        <strong>Live Transcript</strong>
-        <select id="lang-select">
-            <option value="english">English</option>
-            <option value="spanish">Español</option>
-        </select>
-        <span class="status" id="status">Connecting…</span>
-    </div>
-    <div class="notice" id="notice">🔊 A Spanish speaker has the floor — please listen to the room.</div>
-    <div class="transcript" id="transcript"></div>
+<div class="bar">
+    <strong>Live Transcript</strong>
+    <select id="lang-select">
+        <option value="english">English</option>
+        <option value="spanish">Español</option>
+    </select>
+    <span class="status" id="status">Connecting…</span>
+</div>
+<div class="notice" id="notice">🔊 A Spanish speaker has the floor — please listen to the room.</div>
+<div class="transcript" id="transcript"></div>
 
+<script src="/captions.js"></script>
 <script>
     const params = new URLSearchParams(location.search);
     const code = (params.get('session') || '').toUpperCase();
@@ -61,22 +62,14 @@
         notice.classList.remove('active');
         if (!code) { statusEl.textContent = 'No session code'; return; }
 
-        es = new EventSource(`/stream/${code}/${lang}`);
-        es.onopen = () => { statusEl.textContent = 'Connected'; };
-        es.onerror = () => { statusEl.textContent = 'Reconnecting…'; };
-        es.onmessage = (e) => {
-            const data = JSON.parse(e.data);
-            if (data.type === 'session_ended') {
-                box.innerText += '\n\n[Session ended]'; es.close(); statusEl.textContent = 'Ended'; return;
+        es = attachCaptions(`/stream/${code}/${lang}`, box, {
+            onOpen: () => { statusEl.textContent = 'Connected'; },
+            onError: () => { statusEl.textContent = 'Reconnecting…'; },
+            onEnded: () => {
+                box.appendChild(document.createTextNode('\n\n[Session ended]'));
+                statusEl.textContent = 'Ended';
             }
-            if (data.type === 'spanish_turn') {
-                // Only meaningful on the Spanish transcript.
-                if (lang === 'spanish') notice.classList.toggle('active', data.active);
-                return;
-            }
-            if (!data.text) return;
-            box.innerText += data.text; box.scrollTop = box.scrollHeight;
-        };
+        });
     }
 
     select.addEventListener('change', () => { lang = select.value; connect(); });

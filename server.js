@@ -643,9 +643,8 @@ function createCaptionPipeline(streamKey, sessionCode) {
         zoomCaptionLang: 'off', // captions are shown in our own Zoom panel instead
         captionSeq: 1,
         audioFrameCount: 0,
-        sourceBuffer: '',
-        sourceIdleTimer: null,
-        englishEmitChain: null,
+        enLine: null,            // the English sentence still being spoken
+        sentenceIdleTimer: null,
         // English captions come from THIS feed's input transcript.
         sourceTranscriptWsKey: 'esWs'
     };
@@ -689,8 +688,7 @@ function feedPipelineAudio(pipeline, data) {
 function teardownCaptionPipeline(streamKey) {
     const pipeline = rtmsCaptionPipelines.get(streamKey);
     if (!pipeline) return;
-    if (pipeline.sourceIdleTimer) clearTimeout(pipeline.sourceIdleTimer);
-    if (pipeline.sourceBuffer) emitSourceChunk(pipeline, pipeline.sourceBuffer);
+    if (pipeline.enLine) finishSentence(pipeline, pipeline.enLine);
     // Flush buffered caption text so the last words spoken aren't dropped.
     if (pipeline.captionBuffers) {
         Object.keys(pipeline.captionBuffers).forEach(lang => flushZoomCaption(pipeline, lang));
@@ -713,6 +711,8 @@ function createSession(apiKey, micDistance, mode, audioSource) {
         micDistance: micDistance === 'near_field' ? 'near_field' : 'far_field',
         mode: mode === 'transcript_only' ? 'transcript_only' : 'bilingual',
         audioSource: audioSource === 'zoom' ? 'zoom' : 'device',
+        englishLines: new Map(),   // line id -> text, replayed to screens that join late
+        nextLineId: 0,
         clients: { english: [], spanish: [] },
         leaderSocket: null,
         listenerSockets: {},
@@ -738,53 +738,149 @@ function broadcast(sessionCode, language, text) {
     });
 }
 
+// Sends a structured event (e.g. an English caption line) to one language's screens.
+function broadcastEvent(sessionCode, language, obj) {
+    const session = sessions[sessionCode];
+    if (!session) return;
+    const message = `data: ${JSON.stringify(obj)}\n\n`;
+    session.clients[language].forEach(client => {
+        try { client.write(message); } catch (e) {}
+    });
+}
+
 // Sends a non-caption control event (e.g. spanish_turn) to every SSE client.
-// ---- English captions from the source transcript -----------------------
-// The translate session's input transcript is whatever was spoken, in any
-// language. We cut it into ~5-word chunks, let franc decide the language
-// (gpt-transcribe's own language call was too unstable), pass English
-// through, and translate Spanish chunks to English.
-const SOURCE_CHUNK_MIN_WORDS = 5;
-const SOURCE_IDLE_FLUSH_MS = 1500;
-const SOURCE_ENDINGS = ['', ' ', '\n', ',', '.', '!', '?'];
+// ---- English captions: stream immediately, correct in place --------------
+// Every word from the Whisper input transcript is shown the moment it
+// arrives. Captions are sent as numbered LINES (one per sentence), so a line
+// already on screen can be corrected later:
+//   * every ~5 words, franc checks the latest chunk; if it looks Spanish,
+//     Google translates just that chunk and it's swapped in place.
+//   * when the sentence ends (. ! ?, a pause, or it runs long), franc
+//     checks the whole sentence; if it isn't English, Google translates the
+//     whole sentence and replaces the line.
+// Screens receive {type:'line', id, text} and simply redraw line `id`.
+// A slow translation only updates its own line, so it can't hold up others.
+const CHUNK_WORDS = 5;
+const SENTENCE_IDLE_MS = 1500;   // a pause this long ends the sentence
+const SENTENCE_MAX_WORDS = 40;   // long run-ons are checked in pieces
+const ENGLISH_HISTORY_LINES = 300; // kept for screens that join late
+
+const wordCount = s => s.trim().split(/\s+/).filter(Boolean).length;
+const leadingSpace = s => (/^\s/.test(s) ? ' ' : '');
+
+// A line is a list of pieces (checked chunks) plus the words still arriving.
+function lineText(line) {
+    return line.pieces.map(p => p.shown).join('') + line.open;
+}
+
+function sendEnglishLine(pipeline, line) {
+    const session = sessions[pipeline.sessionCode];
+    if (!session) return;
+    const text = lineText(line);
+    session.englishLines.set(line.id, text);
+    if (session.englishLines.size > ENGLISH_HISTORY_LINES) {
+        session.englishLines.delete(session.englishLines.keys().next().value);
+    }
+    broadcastEvent(pipeline.sessionCode, 'english', { type: 'line', id: line.id, text });
+}
 
 function handleSourceTranscriptDelta(pipeline, delta) {
+    const session = sessions[pipeline.sessionCode];
+    if (!session) return;
     const now = Date.now();
     if (pipeline.sourceStallWarned) {
         console.log(`[${pipeline.sessionCode}] SOURCE TRANSCRIPT resumed after ${((now - pipeline.lastSourceDeltaAt) / 1000).toFixed(1)}s of silence`);
         pipeline.sourceStallWarned = false;
     }
     pipeline.lastSourceDeltaAt = now;
-    const words = pipeline.sourceBuffer.trim().split(/\s+/).filter(Boolean).length;
-    if (words >= SOURCE_CHUNK_MIN_WORDS && delta[0] === ' ') {
-        // A new word is starting: cut here. Snapshot and reset BEFORE any
-        // async work, so later deltas can't re-send the same chunk.
-        const chunk = pipeline.sourceBuffer;
-        pipeline.sourceBuffer = delta;
-        emitSourceChunk(pipeline, chunk);
-    } else if (words >= SOURCE_CHUNK_MIN_WORDS && SOURCE_ENDINGS.includes(delta)) {
-        const chunk = pipeline.sourceBuffer + delta;
-        pipeline.sourceBuffer = '';
-        emitSourceChunk(pipeline, chunk);
-    } else {
-        pipeline.sourceBuffer += delta;
+
+    let line = pipeline.enLine;
+    if (!line) {
+        line = pipeline.enLine = { id: ++session.nextLineId, pieces: [], open: '', sentenceTranslated: false };
     }
 
-    // Short utterances ("Thank you.") never reach 5 words. Flush whatever
-    // is buffered once the speaker pauses, so they aren't held indefinitely.
-    if (pipeline.sourceIdleTimer) clearTimeout(pipeline.sourceIdleTimer);
-    pipeline.sourceIdleTimer = setTimeout(() => {
-        const chunk = pipeline.sourceBuffer;
-        pipeline.sourceBuffer = '';
-        emitSourceChunk(pipeline, chunk);
-    }, SOURCE_IDLE_FLUSH_MS);
+    // A new word is starting and the unchecked words have reached a chunk:
+    // set that chunk aside and check its language, then keep streaming.
+    if (delta[0] === ' ' && wordCount(line.open) >= CHUNK_WORDS) {
+        checkChunk(pipeline, line);
+    }
+    line.open += delta;
+    sendEnglishLine(pipeline, line);
+
+    const total = wordCount(lineText(line));
+    if (/[.!?]["')\]]*\s*$/.test(delta) || total >= SENTENCE_MAX_WORDS) {
+        finishSentence(pipeline, line);
+    } else {
+        if (pipeline.sentenceIdleTimer) clearTimeout(pipeline.sentenceIdleTimer);
+        pipeline.sentenceIdleTimer = setTimeout(() => {
+            if (pipeline.enLine === line) finishSentence(pipeline, line);
+        }, SENTENCE_IDLE_MS);
+    }
+}
+
+// Freezes the unchecked words into a piece and, if franc says they aren't
+// clearly English, swaps in Google's translation when it comes back.
+function checkChunk(pipeline, line) {
+    const piece = { raw: line.open, shown: line.open };
+    line.pieces.push(piece);
+    line.open = '';
+    const verdict = classifyChunk(piece.raw);
+    logVerdict(pipeline, 'chunk', verdict, piece.raw);
+    if (!verdict.translate) return;
+    const session = sessions[pipeline.sessionCode];
+    const startedAt = Date.now();
+    translateToEnglish(session, piece.raw, verdict.reason).catch(() => null).then(t => {
+        // The whole-sentence translation wins if it already replaced this line.
+        if (!t || line.sentenceTranslated) return;
+        console.log(`[${pipeline.sessionCode}] chunk translated in ${Date.now() - startedAt}ms: ${piece.raw.trim()} -> ${t}`);
+        piece.shown = leadingSpace(piece.raw) + t;
+        sendEnglishLine(pipeline, line);
+    });
+}
+
+// End of sentence: check the WHOLE sentence. English -> leave it. Otherwise
+// translate the whole sentence and replace the line with it.
+function finishSentence(pipeline, line) {
+    if (pipeline.enLine === line) pipeline.enLine = null;
+    if (pipeline.sentenceIdleTimer) { clearTimeout(pipeline.sentenceIdleTimer); pipeline.sentenceIdleTimer = null; }
+    if (line.open) {
+        line.pieces.push({ raw: line.open, shown: line.open });
+        line.open = '';
+    }
+    const raw = line.pieces.map(p => p.raw).join('');
+    if (!raw.trim()) return;
+    const verdict = classifyChunk(raw);
+    logVerdict(pipeline, 'sentence', verdict, raw);
+    if (!verdict.translate) {
+        queueZoomCaption(pipeline, lineText(line), 'en-US');
+        return;
+    }
+    const session = sessions[pipeline.sessionCode];
+    const startedAt = Date.now();
+    translateToEnglish(session, raw, verdict.reason).catch(() => null).then(t => {
+        if (!t) {
+            // Keep whatever is on screen (chunk translations, or the original).
+            console.log(`[${pipeline.sessionCode}] sentence translation FAILED after ${Date.now() - startedAt}ms -- keeping current line`);
+        } else {
+            console.log(`[${pipeline.sessionCode}] sentence translated in ${Date.now() - startedAt}ms: ${raw.trim()} -> ${t}`);
+            line.sentenceTranslated = true;
+            line.pieces = [{ raw, shown: leadingSpace(raw) + t }];
+            sendEnglishLine(pipeline, line);
+        }
+        queueZoomCaption(pipeline, lineText(line), 'en-US');
+    });
+}
+
+function logVerdict(pipeline, kind, verdict, text) {
+    const scores = verdict.ranked.map(([l, s]) => `${l}=${s.toFixed(2)}`).join(' ');
+    console.log(`[${pipeline.sessionCode}] ${kind} ${verdict.translate ? 'TRANSLATE' : 'english'} (${verdict.reason}; ${scores}): ${text.trim()}`);
 }
 
 // franc scales scores so the winner is always 1.0; the runner-up's score
 // says how close the call was. Translate when franc says Spanish, when it
 // can't decide ('und' -- usually short or mixed text), or when the runner-up
 // is this close. A wrong "translate" is cheap (English comes back as-is);
-// a wrong "pass through" leaves Spanish in the English captions.
+// a wrong "english" leaves Spanish in the English captions.
 const FRANC_CLOSE_CALL = 0.85;
 
 function classifyChunk(chunk) {
@@ -810,47 +906,6 @@ function checkSourceTranscriptStall(pipeline) {
         pipeline.sourceStallWarned = true;
         console.warn(`[${pipeline.sessionCode}] SOURCE TRANSCRIPT STALLED: Spanish is still arriving, but OpenAI has sent no English source text for ${((now - pipeline.lastSourceDeltaAt) / 1000).toFixed(1)}s`);
     }
-}
-
-function emitSourceChunk(pipeline, chunk) {
-    if (!chunk || !chunk.trim()) return;
-    const session = sessions[pipeline.sessionCode];
-    if (!session) return;
-    const verdict = classifyChunk(chunk);
-    const scores = verdict.ranked.map(([l, s]) => `${l}=${s.toFixed(2)}`).join(' ');
-    console.log(`[${pipeline.sessionCode}] chunk ${verdict.translate ? 'TRANSLATE' : 'pass'} (${verdict.reason}; ${scores}): ${chunk.trim()}`);
-
-    if (!verdict.translate) {
-        emitEnglishInOrder(pipeline, chunk);
-        return;
-    }
-    const startedAt = Date.now();
-    emitEnglishInOrder(pipeline,
-        translateToEnglish(session, chunk, verdict.reason)
-            .catch(() => null)
-            .then(t => {
-                if (!t) {
-                    // Showing the untranslated words beats silently losing them.
-                    console.log(`[${pipeline.sessionCode}] translation FAILED after ${Date.now() - startedAt}ms -- showing original: ${chunk.trim()}`);
-                    return chunk;
-                }
-                console.log(`[${pipeline.sessionCode}] translated in ${Date.now() - startedAt}ms: ${chunk.trim()} -> ${t}`);
-                return ' ' + t;
-            }));
-}
-
-// Emits English strictly in the order chunks were cut, even though a
-// Spanish chunk's translation returns later than English cut after it.
-function emitEnglishInOrder(pipeline, textOrPromise) {
-    const pending = Promise.resolve(textOrPromise);
-    pipeline.englishEmitChain = (pipeline.englishEmitChain || Promise.resolve())
-        .then(() => pending)
-        .then(text => {
-            if (!text) return;
-            broadcast(pipeline.sessionCode, 'english', text);
-            queueZoomCaption(pipeline, text, 'en-US');
-        })
-        .catch(err => console.error(`[${pipeline.sessionCode}] English caption emit failed:`, err.message));
 }
 
 // Spanish audio from OpenAI is PCM16 24kHz mono. Send it as binary to every
@@ -933,6 +988,9 @@ const server = http.createServer((req, res) => {
     }
     else if (pathname === '/zoom-app' || pathname === '/zoom-app.html') {
         serveFile(res, './zoom-app.html', 'text/html; charset=UTF-8', ZOOM_APP_SECURITY_HEADERS);
+    }
+    else if (pathname === '/captions.js') {
+        serveFile(res, './captions.js', 'application/javascript; charset=UTF-8');
     }
     else if (pathname === '/logo.png') {
         serveFile(res, './recoveryTrans.png', 'image/png');
@@ -1078,6 +1136,13 @@ const server = http.createServer((req, res) => {
             'Connection': 'keep-alive'
         });
         sessions[sessionCode].clients[language].push(res);
+
+        // A screen joining late gets the English captions so far.
+        if (language === 'english') {
+            for (const [id, text] of sessions[sessionCode].englishLines) {
+                try { res.write(`data: ${JSON.stringify({ type: 'line', id, text })}\n\n`); } catch (e) {}
+            }
+        }
 
         // Tell a late-joining client if a Spanish turn is already in progress.
         if (sessions[sessionCode].spanishTurn) {

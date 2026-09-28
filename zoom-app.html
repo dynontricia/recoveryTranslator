@@ -12,7 +12,24 @@
             padding: 16px; color: #1a202c; background: #f7fafc;
             display: flex; flex-direction: column; gap: 12px;
         }
-        h1 { font-size: 17px; }
+        h1 { font-size: 15px; }
+        .top { display: flex; align-items: center; gap: 8px; }
+        .top .status { flex: 1; padding: 6px 10px; font-size: 12px; }
+        details.controls { background: #fff; border: 1.5px solid #e2e8f0; border-radius: 8px; }
+        details.controls > summary {
+            padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer; list-style: none;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        details.controls > summary::-webkit-details-marker { display: none; }
+        details.controls > summary::after { content: '▸'; color: #718096; }
+        details.controls[open] > summary::after { content: '▾'; }
+        .controls-body { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+        .cap-head { display: flex; align-items: center; gap: 6px; }
+        .cap-head .cap-label { flex: 1; }
+        .size-btn {
+            flex: 0 0 auto; padding: 2px 9px; font-size: 13px; font-weight: 700;
+            background: #e2e8f0; color: #1a202c; border-radius: 6px;
+        }
         h2 { font-size: 15px; }
         .status { padding: 10px 12px; border-radius: 8px; font-size: 13px; line-height: 1.5; }
         .status.ok { background: #f0fff4; border: 1px solid #9ae6b4; color: #22543d; }
@@ -59,8 +76,10 @@
     </style>
 </head>
 <body>
-<h1>Recovery Translator</h1>
-<div class="status pending" id="status">Loading…</div>
+<div class="top">
+    <h1>Recovery Translator</h1>
+    <div class="status pending" id="status">Loading…</div>
+</div>
 
 <!-- A session started in the browser appeared while the form is open -->
 <div class="banner" id="browser-session-banner" style="display:none">
@@ -89,22 +108,33 @@
 </form>
 
 <!-- Running session -->
-<div id="session-view" style="display:none; flex-direction:column; gap:10px;">
-    <div class="join" id="join-info"></div>
-    <div class="row">
-        <button class="btn-start" id="start-btn" onclick="startCaptions()">Start captions</button>
-        <button class="btn-stop" id="stop-btn" onclick="stopCaptions()" disabled>Pause</button>
-        <button class="btn-end" onclick="endSessionFromZoom()">End session</button>
+<details class="controls" id="session-view" style="display:none" open>
+    <summary id="controls-summary">Session controls</summary>
+    <div class="controls-body">
+        <div class="join" id="join-info"></div>
+        <div class="row">
+            <button class="btn-start" id="start-btn" onclick="startCaptions()">Start captions</button>
+            <button class="btn-stop" id="stop-btn" onclick="stopCaptions()" disabled>Pause</button>
+            <button class="btn-end" onclick="endSessionFromZoom()">End session</button>
+        </div>
+        <div class="row toggle" id="display-toggle">
+            <button id="show-en" class="on" onclick="setDisplay('english')">English</button>
+            <button id="show-both" onclick="setDisplay('both')">English + Español</button>
+        </div>
+        <details>
+            <summary>Details</summary>
+            <pre id="log"></pre>
+        </details>
     </div>
-    <div class="row toggle" id="display-toggle">
-        <button id="show-en" class="on" onclick="setDisplay('english')">English</button>
-        <button id="show-both" onclick="setDisplay('both')">English + Español</button>
-    </div>
-</div>
+</details>
 
 <div id="captions" style="display:none">
     <div class="cap-wrap" id="cap-en-wrap">
-        <div class="cap-label">English</div>
+        <div class="cap-head">
+            <div class="cap-label">English</div>
+            <button class="size-btn" onclick="changeTextSize(-2)" aria-label="Smaller text">A−</button>
+            <button class="size-btn" onclick="changeTextSize(2)" aria-label="Larger text">A+</button>
+        </div>
         <div class="cap-box" id="cap-en"></div>
     </div>
     <div class="cap-wrap" id="cap-es-wrap" style="display:none">
@@ -113,12 +143,8 @@
     </div>
 </div>
 
-<details>
-    <summary>Details</summary>
-    <pre id="log"></pre>
-</details>
-
 <script src="https://appssdk.zoom.us/sdk.js"></script>
+<script src="/captions.js"></script>
 <script>
     // The SDK defines window.zoomSdk globally -- don't redeclare it.
     const sdk = window.zoomSdk;
@@ -127,6 +153,9 @@
     let enSource = null, esSource = null;
     let lookTimer = null, audioTimer = null;
     let pendingBrowserSession = null;
+    let captionsWereRunning = false;
+    let textSize = 17;
+    try { textSize = parseInt(localStorage.getItem('rt-panel-text-size'), 10) || 17; } catch (e) {}
 
     const $ = id => document.getElementById(id);
 
@@ -135,8 +164,20 @@
         $('status').textContent = text;
     }
     function log(msg) {
-        $('log').textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
-        $('log').scrollTop = $('log').scrollHeight;
+        const el = $('log');
+        if (!el) return;
+        el.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
+        el.scrollTop = el.scrollHeight;
+    }
+
+    // Text size for both caption boxes, remembered between meetings.
+    function applyTextSize() {
+        ['cap-en', 'cap-es'].forEach(id => { $(id).style.fontSize = textSize + 'px'; });
+    }
+    function changeTextSize(delta) {
+        textSize = Math.max(12, Math.min(40, textSize + delta));
+        try { localStorage.setItem('rt-panel-text-size', textSize); } catch (e) {}
+        applyTextSize();
     }
 
     async function init() {
@@ -148,6 +189,7 @@
             setStatus('err', 'This page runs inside a Zoom meeting. Open it from Apps → Recovery Translator.');
             return;
         }
+        applyTextSize();
         // Remember the access code between meetings (never the API key).
         try { $('access-code').value = localStorage.getItem('rt-access-code') || ''; } catch (e) {}
 
@@ -235,7 +277,10 @@
 
         const joinUrl = `${location.origin}?join=${sessionCode}`;
         $('join-info').innerHTML = `Session <strong>${sessionCode}</strong> · listeners join at <a href="${joinUrl}" target="_blank">${joinUrl}</a>`;
-        $('session-view').style.display = 'flex';
+        $('session-view').style.display = '';
+        $('session-view').open = true;
+        $('controls-summary').textContent = `Session ${sessionCode} · controls`;
+        captionsWereRunning = false;
         $('captions').style.display = '';
         // Spanish is only offered when the session produces it.
         const bilingual = sessionMode !== 'transcript_only';
@@ -322,8 +367,12 @@
     function setCaptionsRunning(running) {
         $('start-btn').disabled = running;
         $('stop-btn').disabled = !running;
-        if (running) setStatus('ok', `Captions are live · session ${sessionCode}`);
-        else if (sessionCode) setStatus('pending', `Session ${sessionCode} · captions paused. Tap Start captions.`);
+        if (running) setStatus('ok', 'Captions live');
+        else if (sessionCode) setStatus('pending', 'Paused — tap Start captions');
+        // Give the captions the room once they're live; reopen to see controls.
+        if (running && !captionsWereRunning) $('session-view').open = false;
+        if (!running && captionsWereRunning) $('session-view').open = true;
+        captionsWereRunning = running;
     }
 
     function setDisplay(mode) {
@@ -352,15 +401,9 @@
     function attach(lang, boxId) {
         const box = $(boxId);
         box.textContent = '';
-        const src = new EventSource(`/stream/${sessionCode}/${lang}`);
-        src.onmessage = (e) => {
-            const data = JSON.parse(e.data);
-            if (data.type === 'session_ended') { box.innerText += '\n\n[Session ended]'; src.close(); return; }
-            if (!data.text) return;
-            box.innerText += data.text;
-            box.scrollTop = box.scrollHeight;
-        };
-        return src;
+        return attachCaptions(`/stream/${sessionCode}/${lang}`, box, {
+            onEnded: () => box.appendChild(document.createTextNode('\n\n[Session ended]'))
+        });
     }
 
     document.addEventListener('DOMContentLoaded', init);
