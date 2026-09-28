@@ -112,6 +112,7 @@
     <summary id="controls-summary">Session controls</summary>
     <div class="controls-body">
         <div class="join" id="join-info"></div>
+        <button class="btn-primary" id="chat-link-btn" onclick="postLinkToChat()">Post join link to meeting chat</button>
         <div class="row">
             <button class="btn-start" id="start-btn" onclick="startCaptions()">Start captions</button>
             <button class="btn-stop" id="stop-btn" onclick="stopCaptions()" disabled>Pause</button>
@@ -182,7 +183,9 @@
 
     async function init() {
         try {
-            const cfg = await sdk.config({ capabilities: ['startRTMS', 'stopRTMS'], version: '0.16' });
+            const cfg = await sdk.config({ capabilities: ['startRTMS', 'stopRTMS', 'sendMessageToChat'], version: '0.16' });
+            // Zoom lists any API not enabled for this app in the Marketplace settings.
+            if (cfg.unsupportedApis && cfg.unsupportedApis.length) log('Not enabled for this app: ' + cfg.unsupportedApis.join(', '));
             log('Connected to Zoom. Context: ' + cfg.runningContext);
         } catch (err) {
             log('sdk.config() failed: ' + err.message);
@@ -319,6 +322,28 @@
             log('Start failed: ' + err.message);
             setStatus('err', 'Could not start captions: ' + err.message);
             $('start-btn').disabled = false;
+        }
+    }
+
+    // Posts the join link to the meeting chat, as you. Text only -- Zoom's
+    // chat API can't attach an image, so the QR code can't go in chat.
+    async function postLinkToChat() {
+        if (!sessionCode) return;
+        const joinUrl = `${location.origin}?join=${sessionCode}`;
+        const message = sessionMode === 'transcript_only'
+            ? `Live captions: ${joinUrl}`
+            : `Live captions and Spanish translation: ${joinUrl}\nSubtítulos y traducción al español en vivo: ${joinUrl}`;
+        const btn = $('chat-link-btn');
+        btn.disabled = true;
+        try {
+            await sdk.sendMessageToChat({ message });
+            log('Posted join link to chat');
+            btn.textContent = 'Posted to chat ✓';
+            setTimeout(() => { btn.textContent = 'Post join link to meeting chat'; btn.disabled = false; }, 4000);
+        } catch (err) {
+            log('Post to chat failed: ' + err.message);
+            setStatus('err', 'Could not post to chat. Check that sendMessageToChat is enabled for the app, and that meeting chat is on.');
+            btn.disabled = false;
         }
     }
 
