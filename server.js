@@ -54,6 +54,9 @@ const ZOOM_WAIT_MAX_MS = 30 * 60 * 1000; // a waiting session expires after 30 m
 function connectZoomAudio(sessionCode) {
     const session = sessions[sessionCode];
     if (!session || session.ended) return 'no-session';
+    // Already receiving Zoom audio -- nothing to do. (Re-marking it as
+    // "waiting" would let the NEXT meeting's audio attach to it.)
+    if ([...rtmsStreamInfo.values()].some(info => info.sessionCode === sessionCode)) return 'connected';
     // Zoom audio already flowing with no session? Claim the newest one now.
     const unclaimed = [...rtmsStreamInfo.entries()]
         .filter(([, info]) => !info.sessionCode)
@@ -1108,6 +1111,25 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify(code
             ? { sessionCode: code, mode: sessions[code].mode, audioConnected: !!findPipelineBySession(code) }
             : { sessionCode: null }));
+    }
+
+    // Lets the Zoom panel end a session (listeners see "session ended").
+    else if (req.method === 'POST' && pathname === '/zoom/end-session') {
+        let body = '';
+        req.on('data', c => { body += c; });
+        req.on('end', () => {
+            let parsed = {};
+            try { parsed = JSON.parse(body); } catch (e) {}
+            const s = sessions[parsed.sessionCode];
+            if (!s || s.ended) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'No active session with that code' }));
+                return;
+            }
+            endSession(parsed.sessionCode);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ended: true }));
+        });
     }
 
         // Panel's "Start captions": claim Zoom audio for this session (now, or

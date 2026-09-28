@@ -13,6 +13,7 @@
             display: flex; flex-direction: column; gap: 12px;
         }
         h1 { font-size: 17px; }
+        h2 { font-size: 15px; }
         .status { padding: 10px 12px; border-radius: 8px; font-size: 13px; line-height: 1.5; }
         .status.ok { background: #f0fff4; border: 1px solid #9ae6b4; color: #22543d; }
         .status.err { background: #fff5f5; border: 1px solid #fc8181; color: #742a2a; }
@@ -22,12 +23,27 @@
             flex: 1; padding: 10px; border: none; border-radius: 8px;
             font-size: 14px; font-weight: 600; cursor: pointer;
         }
+        .btn-primary { background: #4f46e5; color: #fff; }
         .btn-start { background: #38a169; color: #fff; }
-        .btn-stop { background: #e53e3e; color: #fff; }
+        .btn-stop { background: #e2e8f0; color: #1a202c; }
+        .btn-end { background: #e53e3e; color: #fff; }
         .toggle button { background: #e2e8f0; color: #1a202c; font-weight: 500; }
         .toggle button.on { background: #4f46e5; color: #fff; }
         button:disabled { opacity: .5; cursor: not-allowed; }
+        form { display: flex; flex-direction: column; gap: 6px; }
+        label { font-size: 13px; font-weight: 600; margin-top: 4px; }
+        input, select {
+            width: 100%; padding: 9px; border: 1.5px solid #e2e8f0; border-radius: 8px; font-size: 14px;
+        }
+        .hint { font-size: 12px; color: #718096; line-height: 1.4; }
+        .banner {
+            background: #fffaf0; border: 1px solid #f6ad55; border-radius: 8px; padding: 10px 12px;
+            font-size: 13px; display: flex; align-items: center; gap: 10px;
+        }
+        .banner button { flex: 0 0 auto; padding: 6px 12px; font-size: 13px; }
+        .join { font-size: 12px; color: #4a5568; word-break: break-all; }
         #captions { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+        .cap-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
         .cap-label { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #718096; }
         .cap-box {
             flex: 1; min-height: 80px; overflow-y: auto; background: #fff;
@@ -35,7 +51,6 @@
             font-size: 17px; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word;
         }
         #cap-es-wrap .cap-box { background: #e6fffa; border-color: #b2f5ea; }
-        .cap-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
         details { font-size: 11px; color: #718096; }
         pre {
             margin-top: 6px; background: #1a202c; color: #68d391; font-size: 11px; padding: 8px;
@@ -47,14 +62,44 @@
 <h1>Recovery Translator</h1>
 <div class="status pending" id="status">Loading…</div>
 
-<div class="row" id="controls" style="display:none">
-    <button class="btn-start" id="start-btn" onclick="startCaptions()">Start captions</button>
-    <button class="btn-stop" id="stop-btn" onclick="stopCaptions()" disabled>Stop captions</button>
+<!-- A session started in the browser appeared while the form is open -->
+<div class="banner" id="browser-session-banner" style="display:none">
+    <span id="browser-session-text"></span>
+    <button class="btn-primary" onclick="useBrowserSession()">Use it</button>
 </div>
 
-<div class="row toggle" id="display-toggle" style="display:none">
-    <button id="show-en" class="on" onclick="setDisplay('english')">English</button>
-    <button id="show-both" onclick="setDisplay('both')">English + Español</button>
+<!-- Start a session from inside Zoom -->
+<form id="start-form" style="display:none" onsubmit="event.preventDefault(); createSessionFromZoom();">
+    <h2>Start a session</h2>
+    <label for="access-code">Access code</label>
+    <input type="password" id="access-code" autocomplete="off" required/>
+
+    <label for="api-key">OpenAI API key</label>
+    <input type="password" id="api-key" placeholder="Leave blank to use the server's key" autocomplete="off"/>
+
+    <label for="session-mode">What does this session need?</label>
+    <select id="session-mode">
+        <option value="bilingual">Full translation — English and Spanish</option>
+        <option value="transcript_only">English captions only</option>
+    </select>
+
+    <p class="hint">Audio comes from this Zoom meeting. You can also start a session in the browser
+        and choose "A Zoom meeting" as the audio source — it will show up here.</p>
+    <button type="submit" class="btn-primary" id="create-btn">Start session</button>
+</form>
+
+<!-- Running session -->
+<div id="session-view" style="display:none; flex-direction:column; gap:10px;">
+    <div class="join" id="join-info"></div>
+    <div class="row">
+        <button class="btn-start" id="start-btn" onclick="startCaptions()">Start captions</button>
+        <button class="btn-stop" id="stop-btn" onclick="stopCaptions()" disabled>Pause</button>
+        <button class="btn-end" onclick="endSessionFromZoom()">End session</button>
+    </div>
+    <div class="row toggle" id="display-toggle">
+        <button id="show-en" class="on" onclick="setDisplay('english')">English</button>
+        <button id="show-both" onclick="setDisplay('both')">English + Español</button>
+    </div>
 </div>
 
 <div id="captions" style="display:none">
@@ -80,17 +125,18 @@
     let sessionCode = null, sessionMode = 'bilingual';
     let display = 'english';
     let enSource = null, esSource = null;
-    let findTimer = null, audioTimer = null;
+    let lookTimer = null, audioTimer = null;
+    let pendingBrowserSession = null;
+
+    const $ = id => document.getElementById(id);
 
     function setStatus(cls, text) {
-        const el = document.getElementById('status');
-        el.className = 'status ' + cls;
-        el.textContent = text;
+        $('status').className = 'status ' + cls;
+        $('status').textContent = text;
     }
     function log(msg) {
-        const el = document.getElementById('log');
-        el.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
-        el.scrollTop = el.scrollHeight;
+        $('log').textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
+        $('log').scrollTop = $('log').scrollHeight;
     }
 
     async function init() {
@@ -102,49 +148,108 @@
             setStatus('err', 'This page runs inside a Zoom meeting. Open it from Apps → Recovery Translator.');
             return;
         }
-        findSession();
+        // Remember the access code between meetings (never the API key).
+        try { $('access-code').value = localStorage.getItem('rt-access-code') || ''; } catch (e) {}
+
+        const existing = await fetchCurrentSession();
+        if (existing) showSession(existing);
+        else showForm();
     }
 
-    // Look for the session started with "A Zoom meeting" as its audio source.
-    async function findSession() {
+    async function fetchCurrentSession() {
         try {
             const res = await fetch('/zoom/current-session');
             const data = await res.json();
-            if (data.sessionCode) {
-                clearTimeout(findTimer);
-                showSession(data);
-                return;
-            }
-        } catch (err) { log('Session lookup failed: ' + err.message); }
-        setStatus('pending', `No session is waiting for Zoom audio. Go to ${location.origin}, start a session, ` +
-            `and choose "A Zoom meeting" as the audio source. This panel will pick it up automatically.`);
-        findTimer = setTimeout(findSession, 3000);
+            return data.sessionCode ? data : null;
+        } catch (err) {
+            log('Session lookup failed: ' + err.message);
+            return null;
+        }
     }
 
+    // ── No session yet: show the form, and watch for one started in the browser ──
+    function showForm() {
+        sessionCode = null;
+        unsubscribe();
+        clearInterval(audioTimer);
+        $('session-view').style.display = 'none';
+        $('captions').style.display = 'none';
+        $('start-form').style.display = '';
+        $('create-btn').disabled = false;
+        setStatus('pending', 'No session yet. Start one here, or from the browser.');
+        clearInterval(lookTimer);
+        lookTimer = setInterval(async () => {
+            const s = await fetchCurrentSession();
+            // Offer it rather than switching -- don't wipe out what's being typed.
+            if (s && !sessionCode) {
+                pendingBrowserSession = s;
+                $('browser-session-text').textContent = `Session ${s.sessionCode} was started in the browser.`;
+                $('browser-session-banner').style.display = '';
+            }
+        }, 3000);
+    }
+
+    function useBrowserSession() {
+        if (pendingBrowserSession) showSession(pendingBrowserSession);
+    }
+
+    async function createSessionFromZoom() {
+        const accessCode = $('access-code').value.trim();
+        const apiKey = $('api-key').value.trim() || 'default-api-key';
+        const mode = $('session-mode').value;
+        if (!accessCode) return;
+        $('create-btn').disabled = true;
+        setStatus('pending', 'Starting session…');
+        try {
+            const res = await fetch('/session/create', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ accessCode, apiKey, mode, audioSource: 'zoom' })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                setStatus('err', data.error || 'Could not start the session.');
+                $('create-btn').disabled = false;
+                return;
+            }
+            try { localStorage.setItem('rt-access-code', accessCode); } catch (e) {}
+            log(`Session ${data.sessionCode} created (Zoom audio: ${data.zoomAudio})`);
+            showSession({ sessionCode: data.sessionCode, mode, audioConnected: data.zoomAudio === 'connected' });
+            // Starting a session from Zoom means "caption this meeting now".
+            if (data.zoomAudio !== 'connected') startCaptions();
+        } catch (err) {
+            setStatus('err', 'Could not start the session: ' + err.message);
+            $('create-btn').disabled = false;
+        }
+    }
+
+    // ── A session exists: captions and controls ──
     function showSession(data) {
+        clearInterval(lookTimer);
+        $('browser-session-banner').style.display = 'none';
+        $('start-form').style.display = 'none';
+        pendingBrowserSession = null;
         unsubscribe();
         sessionCode = data.sessionCode;
         sessionMode = data.mode;
         log(`Session ${sessionCode} (${sessionMode})`);
-        document.getElementById('controls').style.display = '';
-        document.getElementById('captions').style.display = '';
+
+        const joinUrl = `${location.origin}?join=${sessionCode}`;
+        $('join-info').innerHTML = `Session <strong>${sessionCode}</strong> · listeners join at <a href="${joinUrl}" target="_blank">${joinUrl}</a>`;
+        $('session-view').style.display = 'flex';
+        $('captions').style.display = '';
         // Spanish is only offered when the session produces it.
         const bilingual = sessionMode !== 'transcript_only';
-        document.getElementById('display-toggle').style.display = bilingual ? '' : 'none';
+        $('display-toggle').style.display = bilingual ? '' : 'none';
         if (!bilingual) display = 'english';
         subscribe();
-        if (data.audioConnected) {
-            setCaptionsRunning(true);
-        } else {
-            setStatus('pending', `Session ${sessionCode} is ready. Tap Start captions.`);
-        }
+        setCaptionsRunning(!!data.audioConnected);
         watchAudio();
     }
 
     async function startCaptions() {
-        document.getElementById('start-btn').disabled = true;
+        $('start-btn').disabled = true;
         try {
-            // Tell the server this session wants Zoom's audio, then start it.
+            // Make sure the server is ready to connect this session to Zoom's audio.
             const res = await fetch('/zoom/connect', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sessionCode })
@@ -152,24 +257,23 @@
             const data = await res.json();
             log('Connect: ' + data.status);
             if (data.status === 'no-session') {
-                setStatus('err', 'That session has ended. Start a new one.');
-                sessionCode = null;
-                findSession();
+                setStatus('err', 'That session has ended.');
+                showForm();
                 return;
             }
             try {
                 const r = await sdk.startRTMS();
                 log('startRTMS: ' + JSON.stringify(r));
             } catch (err) {
-                // With RTMS auto-start on, the stream may already be running.
-                // The server already claimed it above, so this isn't fatal.
+                // With RTMS auto-start on, the stream may already be running,
+                // and the server has already claimed it. Not fatal.
                 log('startRTMS: ' + err.message);
             }
             setStatus('pending', 'Connecting to Zoom audio…');
         } catch (err) {
             log('Start failed: ' + err.message);
             setStatus('err', 'Could not start captions: ' + err.message);
-            document.getElementById('start-btn').disabled = false;
+            $('start-btn').disabled = false;
         }
     }
 
@@ -182,51 +286,60 @@
         }
     }
 
+    async function endSessionFromZoom() {
+        if (!sessionCode || !confirm(`End session ${sessionCode} for everyone?`)) return;
+        try {
+            await fetch('/zoom/end-session', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionCode })
+            });
+            log(`Session ${sessionCode} ended`);
+        } catch (err) {
+            log('End failed: ' + err.message);
+        }
+        try { await sdk.stopRTMS(); } catch (e) { /* may already be stopped */ }
+        showForm();
+    }
+
     // Keeps the status and buttons in step with whether Zoom audio is flowing.
     function watchAudio() {
         clearInterval(audioTimer);
-        const check = async () => {
+        audioTimer = setInterval(async () => {
             if (!sessionCode) return;
             try {
                 const res = await fetch(`/zoom/session-status?code=${sessionCode}`);
                 const data = await res.json();
                 if (!data.exists) {
-                    clearInterval(audioTimer);
                     setStatus('err', 'This session has ended.');
-                    document.getElementById('controls').style.display = 'none';
-                    unsubscribe();
-                    sessionCode = null;
-                    findSession();
+                    showForm();
                     return;
                 }
                 setCaptionsRunning(data.audioConnected);
             } catch (e) { /* keep trying */ }
-        };
-        audioTimer = setInterval(check, 2000);
+        }, 2000);
     }
 
     function setCaptionsRunning(running) {
-        document.getElementById('start-btn').disabled = running;
-        document.getElementById('stop-btn').disabled = !running;
+        $('start-btn').disabled = running;
+        $('stop-btn').disabled = !running;
         if (running) setStatus('ok', `Captions are live · session ${sessionCode}`);
-        else if (sessionCode) setStatus('pending', `Session ${sessionCode} is ready. Tap Start captions.`);
+        else if (sessionCode) setStatus('pending', `Session ${sessionCode} · captions paused. Tap Start captions.`);
     }
 
     function setDisplay(mode) {
         display = mode;
-        document.getElementById('show-en').classList.toggle('on', mode === 'english');
-        document.getElementById('show-both').classList.toggle('on', mode === 'both');
+        $('show-en').classList.toggle('on', mode === 'english');
+        $('show-both').classList.toggle('on', mode === 'both');
         subscribe();
     }
 
-    // Each box streams its language from the server -- the same feed the
-    // display page and listeners use. English stays connected; the toggle
-    // only adds or removes Spanish, so English on screen is never wiped.
+    // English stays connected; the toggle only adds or removes Spanish,
+    // so English already on screen is never wiped.
     function subscribe() {
         if (!sessionCode) return;
         if (!enSource) enSource = attach('english', 'cap-en');
         const showEs = display === 'both' && sessionMode !== 'transcript_only';
-        document.getElementById('cap-es-wrap').style.display = showEs ? '' : 'none';
+        $('cap-es-wrap').style.display = showEs ? '' : 'none';
         if (showEs && !esSource) esSource = attach('spanish', 'cap-es');
         if (!showEs && esSource) { esSource.close(); esSource = null; }
     }
@@ -237,7 +350,7 @@
     }
 
     function attach(lang, boxId) {
-        const box = document.getElementById(boxId);
+        const box = $(boxId);
         box.textContent = '';
         const src = new EventSource(`/stream/${sessionCode}/${lang}`);
         src.onmessage = (e) => {
