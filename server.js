@@ -607,20 +607,243 @@ async function fetchZoomCaptionUrl(pipeline, meetingId, isRetry = false) {
     return false;
 }
 
+// ---- Gemini Live Translate -------------------------------------------------
+// Speech-to-speech translation into Spanish. Gives us, from one connection:
+//   * Spanish captions  (outputTranscription)
+//   * Spanish audio     (modelTurn inlineData, PCM16 24kHz -- same format the
+//                        listener player already handles)
+//   * optionally the source transcript (inputTranscription), when
+//     ENGLISH_SOURCE=gemini
+// Input is PCM16 16kHz -- what Zoom RTMS and the browser already send -- so
+// no resampling. Google recommends ~100ms chunks; our frames are 20ms, so
+// five are batched per send.
+//
+// A Gemini Live connection lasts ~10 minutes; Google sends `goAway` about a
+// minute before it ends. For long meetings we do a rolling hand-off: open a
+// fresh connection, switch audio to it once it's ready, and let the old one
+// finish its last words before closing. Translation doesn't need memory of
+// earlier speech, so no session resumption is needed. Unexpected drops
+// reconnect on their own.
+const GEMINI_TRANSLATE_MODEL = 'gemini-3.5-live-translate-preview';
+const GEMINI_WS_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+const GEMINI_CHUNK_BYTES = 3200;               // 100ms of 16kHz mono PCM16
+const GEMINI_BUFFER_MAX_BYTES = 3 * 32000;     // hold up to 3s of audio while (re)connecting
+const GEMINI_ROTATE_MS = 9 * 60 * 1000;        // hand off before the ~10-minute limit
+const GEMINI_HANDOFF_GRACE_MS = 5000;          // old connection's time to finish its last words
+const GEMINI_RECONNECT_MAX_MS = 15000;
+
+function connectGeminiTranslator(pipeline) {
+    pipeline.gemini = {
+        active: null,          // the connection audio goes to
+        opening: null,         // a connection being set up (start or hand-off)
+        pending: Buffer.alloc(0),
+        closed: false,
+        retryMs: 1000,
+        retryTimer: null,
+        loggedChunks: 0
+    };
+    openGeminiConnection(pipeline, 'start');
+}
+
+function openGeminiConnection(pipeline, why) {
+    const g = pipeline.gemini;
+    if (!g || g.closed || g.opening) return;
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) {
+        console.error(`[${pipeline.sessionCode}] gemini: GEMINI_API_KEY is not set -- no Spanish translation`);
+        return;
+    }
+    const session = sessions[pipeline.sessionCode];
+    const wantSource = ENGLISH_SOURCE === 'gemini';
+    // Key goes in the URL (Google's documented form) -- never log this URL.
+    const ws = new WebSocket(`${GEMINI_WS_URL}?key=${encodeURIComponent(key)}`);
+    const conn = { ws, ready: false, retiring: false, rotateTimer: null, openedAt: Date.now() };
+    g.opening = conn;
+    console.log(`[${pipeline.sessionCode}] gemini: connecting (${why})`);
+
+    ws.on('open', () => {
+        ws.send(JSON.stringify({
+            setup: {
+                model: `models/${GEMINI_TRANSLATE_MODEL}`,
+                generationConfig: {
+                    responseModalities: ['AUDIO'],
+                    outputAudioTranscription: {},
+                    ...(wantSource ? { inputAudioTranscription: {} } : {}),
+                    translationConfig: {
+                        targetLanguageCode: 'es',
+                        // Spanish already being spoken is passed through in
+                        // Spanish, so Spanish listeners hear every speaker.
+                        echoTargetLanguage: true
+                    }
+                }
+            }
+        }));
+    });
+
+    ws.on('message', (raw) => {
+        let msg;
+        try { msg = JSON.parse(raw.toString()); } catch (e) { return; }
+
+        if (msg.setupComplete !== undefined) {
+            promoteGeminiConnection(pipeline, conn);
+            return;
+        }
+        if (msg.goAway) {
+            console.log(`[${pipeline.sessionCode}] gemini: goAway (time left ${msg.goAway.timeLeft || '?'}) -- handing off`);
+            if (conn === g.active) openGeminiConnection(pipeline, 'goAway hand-off');
+            return;
+        }
+        if (msg.error) {
+            console.error(`[${pipeline.sessionCode}] gemini ERROR:`, JSON.stringify(msg.error));
+            return;
+        }
+
+        const sc = msg.serverContent;
+        if (!sc) return;
+        const transcriptOnly = session && session.mode === 'transcript_only';
+
+        // Spanish captions
+        if (sc.outputTranscription && sc.outputTranscription.text) {
+            const text = sc.outputTranscription.text;
+            if (g.loggedChunks < 8) {
+                // A few raw chunks, to check how Gemini spaces its text.
+                g.loggedChunks++;
+                console.log(`[${pipeline.sessionCode}] gemini caption chunk ${JSON.stringify(text)}`);
+            }
+            checkSourceTranscriptStall(pipeline);
+            if (!transcriptOnly) {
+                broadcast(pipeline.sessionCode, 'spanish', text);
+                queueZoomCaption(pipeline, text, 'es-ES');
+            }
+        }
+
+        // Spanish audio -> listeners who tapped "Hear translation"
+        if (sc.modelTurn && sc.modelTurn.parts && !transcriptOnly) {
+            for (const part of sc.modelTurn.parts) {
+                if (part.inlineData && part.inlineData.data) {
+                    if (!pipeline.loggedFirstAudio) {
+                        pipeline.loggedFirstAudio = true;
+                        console.log(`[${pipeline.sessionCode}] AUDIO checkpoint 1: Gemini is producing Spanish audio (${part.inlineData.mimeType || 'pcm'})`);
+                    }
+                    relayTranslatedAudio(pipeline.sessionCode, Buffer.from(part.inlineData.data, 'base64'));
+                }
+            }
+        }
+
+        // Source transcript, when Gemini is the English caption source
+        if (wantSource && sc.inputTranscription && sc.inputTranscription.text) {
+            handleSourceTranscriptDelta(pipeline, sc.inputTranscription.text);
+        }
+    });
+
+    ws.on('error', (err) => console.error(`[${pipeline.sessionCode}] gemini WS error:`, err.message));
+
+    ws.on('close', (code, reason) => {
+        if (conn.rotateTimer) clearTimeout(conn.rotateTimer);
+        const why = reason && reason.toString();
+        if (g.closed || conn.retiring) return;
+        console.warn(`[${pipeline.sessionCode}] gemini: connection closed (code ${code}${why ? `: ${why}` : ''})`);
+        if (g.opening === conn) g.opening = null;
+        if (g.active === conn) g.active = null;
+        // Unexpected drop: reconnect, backing off if it keeps failing.
+        if (!g.active && !g.opening && !g.retryTimer) {
+            g.retryTimer = setTimeout(() => {
+                g.retryTimer = null;
+                openGeminiConnection(pipeline, 'reconnect');
+            }, g.retryMs);
+            g.retryMs = Math.min(g.retryMs * 2, GEMINI_RECONNECT_MAX_MS);
+        }
+    });
+}
+
+// A new connection is ready: send audio to it, and retire the old one.
+function promoteGeminiConnection(pipeline, conn) {
+    const g = pipeline.gemini;
+    if (!g || g.closed) { conn.ws.close(); return; }
+    conn.ready = true;
+    if (g.opening === conn) g.opening = null;
+    const old = g.active;
+    g.active = conn;
+    g.retryMs = 1000;
+    console.log(`[${pipeline.sessionCode}] gemini: live${old ? ' (handed off)' : ''}`);
+    if (old && old !== conn) retireGeminiConnection(old);
+    // Hand off before Google's ~10-minute limit, even if goAway never comes.
+    conn.rotateTimer = setTimeout(() => {
+        if (g.active === conn) openGeminiConnection(pipeline, 'scheduled hand-off');
+    }, GEMINI_ROTATE_MS);
+    flushGeminiAudio(pipeline);
+}
+
+function retireGeminiConnection(conn) {
+    conn.retiring = true;
+    if (conn.rotateTimer) clearTimeout(conn.rotateTimer);
+    // It gets no new audio; give it a moment to finish translating.
+    setTimeout(() => { try { conn.ws.close(); } catch (e) {} }, GEMINI_HANDOFF_GRACE_MS);
+}
+
+function sendGeminiAudio(pipeline, pcm16k) {
+    const g = pipeline.gemini;
+    if (!g || g.closed) return;
+    g.pending = Buffer.concat([g.pending, pcm16k]);
+    flushGeminiAudio(pipeline);
+}
+
+function flushGeminiAudio(pipeline) {
+    const g = pipeline.gemini;
+    const ws = g.active && g.active.ready && g.active.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        // Not connected right now: keep the most recent few seconds.
+        if (g.pending.length > GEMINI_BUFFER_MAX_BYTES) {
+            g.pending = g.pending.subarray(g.pending.length - GEMINI_BUFFER_MAX_BYTES);
+        }
+        return;
+    }
+    while (g.pending.length >= GEMINI_CHUNK_BYTES) {
+        const chunk = g.pending.subarray(0, GEMINI_CHUNK_BYTES);
+        g.pending = g.pending.subarray(GEMINI_CHUNK_BYTES);
+        ws.send(JSON.stringify({
+            realtimeInput: { audio: { data: chunk.toString('base64'), mimeType: 'audio/pcm;rate=16000' } }
+        }));
+    }
+}
+
+function closeGeminiTranslator(pipeline) {
+    const g = pipeline.gemini;
+    if (!g) return;
+    g.closed = true;
+    if (g.retryTimer) clearTimeout(g.retryTimer);
+    for (const conn of [g.active, g.opening]) {
+        if (!conn) continue;
+        if (conn.rotateTimer) clearTimeout(conn.rotateTimer);
+        try { conn.ws.close(); } catch (e) {}
+    }
+    g.active = g.opening = null;
+}
+
 // ---- Shared caption pipeline --------------------------------------------
 // Used by BOTH the real Zoom RTMS path and the local browser test path
 // (/audio-test), so a local test exercises exactly the code Zoom runs.
 // Both paths feed 16kHz mono PCM16 in 20ms frames.
 
+// Who translates into Spanish (captions + audio):
+//   'gemini' (default) -- Gemini Live Translate. Needs GEMINI_API_KEY.
+//   'openai'           -- OpenAI gpt-realtime-translate.
+const TRANSLATE_PROVIDER = process.env.TRANSLATE_PROVIDER === 'openai' ? 'openai' : 'gemini';
+
 // Where the English captions' source text comes from:
-//   'dedicated' (default) -- a separate transcription session whose only job
-//                            is the transcript.
-//   'translate'           -- the translate session's own input transcript
-//                            (can go silent for a minute while Spanish
-//                            keeps flowing -- see SOURCE TRANSCRIPT STALLED).
-// Set ENGLISH_SOURCE=translate in the environment to switch back.
-const ENGLISH_SOURCE = process.env.ENGLISH_SOURCE === 'translate' ? 'translate' : 'dedicated';
-console.log(`English caption source: ${ENGLISH_SOURCE}`);
+//   'dedicated' (default) -- OpenAI transcription session (gpt-realtime-whisper)
+//                            whose only job is the transcript.
+//   'gemini'              -- Gemini's own input transcript (TRANSLATE_PROVIDER=gemini).
+//   'translate'           -- OpenAI translate session's input transcript
+//                            (TRANSLATE_PROVIDER=openai; can stall for a minute).
+let ENGLISH_SOURCE = ['dedicated', 'gemini', 'translate'].includes(process.env.ENGLISH_SOURCE)
+    ? process.env.ENGLISH_SOURCE : 'dedicated';
+if ((ENGLISH_SOURCE === 'gemini' && TRANSLATE_PROVIDER !== 'gemini') ||
+    (ENGLISH_SOURCE === 'translate' && TRANSLATE_PROVIDER !== 'openai')) {
+    console.warn(`ENGLISH_SOURCE=${ENGLISH_SOURCE} needs a different TRANSLATE_PROVIDER -- using 'dedicated'`);
+    ENGLISH_SOURCE = 'dedicated';
+}
+console.log(`Translation: ${TRANSLATE_PROVIDER} · English caption source: ${ENGLISH_SOURCE}`);
 
 function createCaptionPipeline(streamKey, sessionCode) {
     const pipeline = {
@@ -636,17 +859,18 @@ function createCaptionPipeline(streamKey, sessionCode) {
         enMode: 'english',       // 'english' = stream live, 'spanish' = translate every chunk
         sentenceIdleTimer: null,
         // English captions come from THIS connection's transcript.
-        sourceTranscriptWsKey: ENGLISH_SOURCE === 'dedicated' ? 'transcribeWs' : 'esWs'
+        sourceTranscriptWsKey: { dedicated: 'transcribeWs', translate: 'esWs', gemini: 'gemini' }[ENGLISH_SOURCE]
     };
     rtmsCaptionPipelines.set(streamKey, pipeline);
 
     // Which OpenAI sessions run -- one place to change it for Zoom AND tests.
     const englishOnly = sessions[sessionCode] && sessions[sessionCode].mode === 'transcript_only';
     if (ENGLISH_SOURCE === 'dedicated') connectEnglishTranscriptionWs(pipeline);
-    // English-only sessions with a dedicated transcript don't need the
-    // translate session at all.
+    // English-only sessions with a dedicated transcript don't need a
+    // translator at all.
     if (!(englishOnly && ENGLISH_SOURCE === 'dedicated')) {
-        connectTranslateWs(pipeline, 'es', 'esWs', 'esReady', 'spanish');
+        if (TRANSLATE_PROVIDER === 'gemini') connectGeminiTranslator(pipeline);
+        else connectTranslateWs(pipeline, 'es', 'esWs', 'esReady', 'spanish');
     }
     return pipeline;
 }
@@ -654,21 +878,28 @@ function createCaptionPipeline(streamKey, sessionCode) {
 function feedPipelineAudio(pipeline, data) {
     try {
         pipeline.audioFrameCount++;
+        const pcm16k = toAudioBuffer(data);
         if (pipeline.audioFrameCount === 1) {
-            console.log(`[${pipeline.sessionCode}] first audio frame -- byteLength=${data && data.byteLength}`);
+            console.log(`[${pipeline.sessionCode}] first audio frame -- byteLength=${pcm16k.length}`);
+        }
+        if (pipeline.audioFrameCount % 250 === 1) {
+            const g = pipeline.gemini;
+            console.log(`[${pipeline.sessionCode}] frame ${pipeline.audioFrameCount}, transcribeWs=${pipeline.transcribeWs && pipeline.transcribeWs.readyState}, ` +
+                (g ? `gemini=${g.active ? 'live' : g.opening ? 'connecting' : 'down'}` : `esWs=${pipeline.esWs && pipeline.esWs.readyState}`));
         }
 
-        const resampled = resamplePCM16(toAudioBuffer(data), 16000, 24000);
-        const b64 = resampled.toString('base64');
+        // Gemini takes 16kHz as-is.
+        if (pipeline.gemini) sendGeminiAudio(pipeline, pcm16k);
+
+        // OpenAI needs 24kHz.
+        const openaiTargets = [pipeline.transcribeWs, pipeline.enWs, pipeline.esWs]
+            .filter(ws => ws && ws.readyState === WebSocket.OPEN);
+        if (!openaiTargets.length) return;
+        const b64 = resamplePCM16(pcm16k, 16000, 24000).toString('base64');
         // The translation endpoint needs the 'session.' prefix (confirmed by a
         // live rejection from OpenAI); the standard transcription endpoint
         // uses the plain event name.
         const translateMsg = JSON.stringify({ type: 'session.input_audio_buffer.append', audio: b64 });
-
-        if (pipeline.audioFrameCount % 250 === 1) {
-            console.log(`[${pipeline.sessionCode}] frame ${pipeline.audioFrameCount}, transcribeWs=${pipeline.transcribeWs && pipeline.transcribeWs.readyState}, esWs=${pipeline.esWs && pipeline.esWs.readyState}`);
-        }
-
         if (pipeline.transcribeWs && pipeline.transcribeWs.readyState === WebSocket.OPEN) {
             pipeline.transcribeWs.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 }));
         }
@@ -691,6 +922,7 @@ function teardownCaptionPipeline(streamKey) {
     if (pipeline.transcribeWs) pipeline.transcribeWs.close();
     if (pipeline.enWs) pipeline.enWs.close();
     if (pipeline.esWs) pipeline.esWs.close();
+    closeGeminiTranslator(pipeline);
     rtmsCaptionPipelines.delete(streamKey);
 }
 
