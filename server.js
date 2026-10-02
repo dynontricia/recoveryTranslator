@@ -666,9 +666,9 @@ function openGeminiConnection(pipeline, why) {
             setup: {
                 model: `models/${GEMINI_TRANSLATE_MODEL}`,
                 generationConfig: {
-                    responseModalities: ['AUDIO'],
+                    responseModalities: ['AUDIO', 'TEXT'],
                     outputAudioTranscription: {},
-                    ...(wantSource ? { inputAudioTranscription: {} } : {}),
+                    inputAudioTranscription: {},
                     translationConfig: {
                         targetLanguageCode: 'es',
                         // Spanish already being spoken is passed through in
