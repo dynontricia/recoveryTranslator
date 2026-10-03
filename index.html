@@ -40,8 +40,6 @@
         .btn-primary { background: #4f46e5; color: white; }
         .btn-secondary { background: #e2e8f0; color: #1a202c; }
         .btn-danger { background: #e53e3e; color: white; }
-        .btn-success { background: #38a169; color: white; }
-        .btn-sm { display:inline-block; width:auto; padding:6px 14px; font-size:14px; margin:0 4px 0 0; }
 
         label { display: block; font-size: 14px; font-weight: 500; margin-bottom: 6px; color: #2d3748; }
         input, select {
@@ -88,13 +86,6 @@
             .leader-right { flex: 1 1 100%; }
         }
 
-        .turn-indicator {
-            display: none; background: #fffaf0; border: 1.5px solid #f6ad55;
-            color: #c05621; border-radius: 10px; padding: 12px 14px;
-            font-size: 14px; font-weight: 600; margin-bottom: 12px;
-        }
-        .turn-indicator.active { display: block; }
-        #screen-leader-live.mode-transcript-only .bilingual-only { display: none; }
 
         .status-dot {
             width: 10px; height: 10px; border-radius: 50%; background: #48bb78;
@@ -104,20 +95,6 @@
         .status-bar { display: flex; align-items: center; font-size: 14px; color: #4a5568; margin-bottom: 16px; }
         .divider { border: none; border-top: 1px solid #e2e8f0; margin: 20px 0; }
 
-        .speak-queue { margin-bottom: 16px; }
-        .queue-item {
-            display: flex; align-items: center; justify-content: space-between;
-            background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 8px;
-            padding: 12px 14px; margin-bottom: 8px; font-size: 14px;
-        }
-        .badge { background: #ebf4ff; color: #2b6cb0; border-radius: 20px; padding: 2px 10px; font-size: 12px; font-weight: 600; margin-right: 8px; }
-
-        .notice {
-            display: none; background: #ebf8ff; border: 1.5px solid #90cdf4;
-            color: #2c5282; border-radius: 12px; padding: 20px; text-align: center;
-            font-size: 18px; font-weight: 600; margin-bottom: 20px; line-height: 1.5;
-        }
-        .notice.active { display: block; }
 
         .logo { position: absolute; top: 0; left: 0; margin-top: 15px; z-index: 1; }
         .logo img { max-width: 320px; width: 100%; }
@@ -158,6 +135,9 @@
         .modal p { font-size: 14px; color: #4a5568; margin-bottom: 12px; line-height: 1.6; }
         .modal ol { padding-left: 20px; margin-bottom: 16px; }
         .modal ol li { font-size: 14px; color: #4a5568; margin-bottom: 8px; line-height: 1.6; }
+        .modal ul { padding-left: 20px; margin-bottom: 16px; }
+        .modal ul li { font-size: 14px; color: #4a5568; margin-bottom: 8px; line-height: 1.6; }
+        .modal .modal-date { font-size: 13px; color: #718096; margin-top: -8px; }
         .modal-close { position: absolute; top: 16px; right: 16px; background: none; border: none; font-size: 20px; cursor: pointer; color: #718096; padding: 4px 8px; }
     </style>
 </head>
@@ -183,12 +163,12 @@
             <div class="error" id="leader-error"></div>
             <label>Access code</label>
             <input type="password" id="access-code" placeholder="Enter access code"/>
-            <label>OpenAI API key</label>
-            <input type="password" id="api-key" placeholder="sk-..."/>
 
-            <label>What does this session need?</label>
+            <label>Who should be able to listen to audio?</label>
             <select id="session-mode">
-                <option value="bilingual" selected>Full translation — English captions and a live Spanish translation</option>
+                <option value="audio_es" selected>English text · Spanish text &amp; audio</option>
+                <option value="audio_en">English text &amp; audio · Spanish text</option>
+                <option value="audio_both">English text &amp; audio · Spanish text &amp; audio</option>
             </select>
 
             <label>Where is the audio coming from?</label>
@@ -203,12 +183,6 @@
                     <option value="">Default microphone</option>
                 </select>
                 <button class="link-btn" type="button" onclick="loadInputDevices()" style="margin:-8px 0 12px">Load audio devices (pick BlackHole to caption system audio)</button>
-
-                <label>How are people speaking into this session?</label>
-                <select id="mic-distance">
-                    <option value="far_field" selected>The phone or mic is across the room (Owl, conference mic, speakerphone on a table)</option>
-                    <option value="near_field">Someone is holding the phone or speaking close to it (headset, hand-held, podium mic near the mouth)</option>
-                </select>
             </div>
 
             <p class="small" id="zoom-fields-hint" style="display:none;text-align:left;margin:-6px 0 16px">
@@ -217,8 +191,8 @@
             </p>
 
             <p class="small" style="margin-top:4px;margin-bottom:20px;text-align:left">
-                English is captioned live, and Spanish attendees get a live Spanish translation.
-                Both run the whole time — no need to switch when someone speaks Spanish.
+                Everyone gets live English and Spanish captions, whatever language the speaker uses.
+                Listeners can also hear the languages marked "audio" read aloud.
             </p>
             <button class="btn btn-primary" onclick="createSession()">Start session</button>
             <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
@@ -254,7 +228,7 @@
                         <div class="caption-panel-label">English</div>
                         <div class="caption-box" id="caption-box-en"></div>
                     </div>
-                    <div class="caption-panel caption-panel-es bilingual-only">
+                    <div class="caption-panel caption-panel-es">
                         <div class="caption-panel-label">Español</div>
                         <div class="caption-box" id="caption-box-es"></div>
                     </div>
@@ -271,15 +245,12 @@
             <div class="error" id="listener-error"></div>
             <label>Session code</label>
             <input type="text" id="session-code-input" placeholder="ABC123" maxlength="6"
-                   oninput="this.value = this.value.toUpperCase(); checkSessionModeForJoin();"/>
+                   oninput="this.value = this.value.toUpperCase()"/>
             <label>Preferred language</label>
             <select id="listener-language">
                 <option value="english">English</option>
-                <option value="spanish" id="listener-language-spanish">Español</option>
+                <option value="spanish">Español</option>
             </select>
-            <p class="small" id="transcript-only-note" style="display:none;text-align:left;margin-top:-10px">
-                This session is English captions only — no Spanish translation is available.
-            </p>
             <button class="btn btn-primary" onclick="joinSession()">Join</button>
             <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
         </div>
@@ -292,7 +263,7 @@
 
             <div class="caption-box" id="caption-box"></div>
 
-            <button class="btn btn-secondary" id="audio-toggle-btn" onclick="toggleAudio()">🔊 Hear translation</button>
+            <button class="btn btn-secondary" id="audio-toggle-btn" onclick="toggleAudio()" style="display:none">🔊 Listen</button>
             <p class="small" id="audio-status"></p>
             <p class="small" id="audio-debug" style="font-family:ui-monospace,monospace;color:#718096"></p>
             <button class="link-btn" type="button" onclick="playTestSound()">No sound? Play a test sound</button>
@@ -306,7 +277,6 @@
     <a href="#" onclick="openModal('modal-about')">About</a>
     <a href="#" onclick="openModal('modal-privacy')">Privacy Policy</a>
     <a href="mailto:dynontricia@gmail.com">Contact</a>
-    <span style="width:100%;font-size:12px;color:#a0aec0;margin-top:4px">build: queue+toggle · dual-session</span>
 </footer>
 
 <!-- MODAL: Privacy -->
@@ -314,19 +284,66 @@
     <div class="modal">
         <button class="modal-close" onclick="closeModal('modal-privacy')">✕</button>
         <h2>Privacy Policy</h2>
-        <p>Recovery Translator is a free tool built to support recovery communities. We take your privacy seriously.</p>
-        <h3>Audio &amp; Transcripts</h3>
-        <p>Audio is streamed directly from the session leader's device to OpenAI's transcription and translation APIs for real-time processing. Recovery Translator does not store, record, or retain any audio or transcript data on its servers.</p>
-        <h3>OpenAI Data Policy</h3>
-        <p>Audio and transcripts are processed by OpenAI and may be retained by OpenAI for up to 30 days for abuse monitoring purposes. This monitoring is automated. Recovery Translator's use case — spoken language captioning and interpretation for recovery meetings — does not fall into any prohibited category.</p>
-        <p>If no abuse is detected by OpenAI's automated systems, no human at OpenAI will review your audio or transcripts.</p>
-        <p>OpenAI does not use API data to train its models. For more information, visit openai.com/privacy.</p>
-        <h3>Session Data</h3>
-        <p>Session codes and connection data exist only in memory for the duration of your session and are deleted when the session ends. Your browser stores your session code locally so you can reconnect automatically if you briefly lose connection — this is cleared when the session ends.</p>
-        <h3>No Accounts, No Tracking</h3>
-        <p>Recovery Translator does not require accounts, use cookies, or track users.</p>
+        <p class="modal-date">Last updated: October 3, 2026</p>
+        <p>Recovery Translator was built by and for the recovery community, where anonymity matters. This page explains, in plain language, what happens to what is said in a meeting while Recovery Translator is running.</p>
+
+        <h3>The short version</h3>
+        <ul>
+            <li>No accounts, no names, no cookies, no ads, no analytics.</li>
+            <li>We do not record or save meeting audio, captions, or translations.</li>
+            <li>Meeting audio is sent to Google's Gemini API to be translated. We use Google's <strong>paid</strong> service, so Google does not use it to train or improve its products.</li>
+            <li>Google keeps what is sent and returned for up to <strong>55 days</strong>, only to detect abuse of its service, such as hate speech or harassment. If its automated systems flag something, authorized Google staff may review it.</li>
+            <li>Anything said aloud while captions are running is sent for translation, so share with that in mind.</li>
+        </ul>
+
+        <h3>What we never collect</h3>
+        <p>Recovery Translator does not ask for your name, email, phone number, or any other personal details. Listeners join with only a session code. Session leaders use an access code, which is not tied to anyone's identity.</p>
+
+        <h3>What happens to meeting audio</h3>
+        <p>While a session is running, audio from the leader's microphone (or from the Zoom meeting, through the Recovery Translator Zoom app) passes through our server straight to Google's Gemini API. Google returns the English and Spanish captions and spoken translation, and our server passes them straight on to the people in the session. Nothing is written to disk along the way, and nothing remains on our server after the session ends.</p>
+
+        <h3>How Google handles it</h3>
+        <p>Recovery Translator uses the paid tier of the Gemini API. Under Google's terms for paid services:</p>
+        <ul>
+            <li>Google does <strong>not</strong> use the audio, captions, or translations to train or improve its products.</li>
+            <li>Google processes the data as a <em>data processor</em>, under its Data Processing Addendum.</li>
+            <li>Google logs what is sent and what comes back for up to 55 days. It uses these logs only to detect and prevent violations of its Prohibited Use Policy, and for any legally required disclosures. It does not use them to train AI models, other than the systems that enforce that policy.</li>
+            <li>Google's automated systems scan for the kinds of misuse its Prohibited Use Policy lists. For example:
+                <ul>
+                    <li><strong>Hate speech or harassment:</strong> using the service to attack, threaten, or bully people.</li>
+                    <li><strong>Sexually explicit or dangerous content:</strong> using it to produce explicit material, or instructions that could cause serious harm.</li>
+                </ul>
+                These rules target misuse of the service. They are not aimed at people sharing honestly about their own experience.
+                Flagged content may be reviewed by authorized Google employees.</li>
+            <li>The data may be stored briefly or cached in any country where Google or its agents have facilities.</li>
+        </ul>
+        <p>Google does not receive anyone's name or account from us; it receives the audio itself. But a voice, or details someone shares, could still identify them.</p>
+
+        <h3>Protecting anonymity in your meeting</h3>
+        <ul>
+            <li><strong>Leaders:</strong> please let the group know at the start that the meeting is being translated live by an AI service, and briefly explain what that means.</li>
+            <li><strong>Members:</strong> as you would in any open meeting, consider using first names only and leaving out details that could identify you or others, such as last names, workplaces, or places.</li>
+            <li>Everything said aloud while captions are running is sent for translation. In Zoom, the leader can tap <strong>Pause</strong> to stop sending audio for part of a meeting, or end the session.</li>
+        </ul>
+
+        <h3>What our server keeps</h3>
+        <ul>
+            <li><strong>During a session:</strong> the session code, and which screens are connected to it. This is held in memory only and deleted when the session ends.</li>
+            <li><strong>Technical logs:</strong> our hosting provider keeps routine logs, such as session codes, connection and error events, and Zoom stream IDs. These logs never include audio, captions, translations, or names.</li>
+            <li><strong>Zoom app:</strong> when the Zoom app is installed, Zoom gives us an authorization token for the Zoom account that installed it. We store that token securely, and use it only for the Recovery Translator Zoom app.</li>
+        </ul>
+
+        <h3>What stays on your device</h3>
+        <p>Some pages remember small settings in your browser, such as caption text size and display colors. The Zoom app also remembers the leader's access code. These stay on your device and are never sent to us. We do not use cookies.</p>
+
+        <h3>Other services</h3>
+        <p>Like any website, our hosting provider can see the IP address of each visitor. The pages load a QR-code library from Cloudflare's cdnjs, and the Zoom app loads Zoom's own app software. When used inside Zoom, Zoom's privacy policy also applies.</p>
+
+        <h3>Changes</h3>
+        <p>If how Recovery Translator handles data changes, we will update this page and the date at the top.</p>
+
         <h3>Contact</h3>
-        <p>Questions about privacy? Email <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
+        <p>Questions or concerns about privacy? Email <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
     </div>
 </div>
 
@@ -337,20 +354,18 @@
         <h2>Step-by-Step Instructions</h2>
         <h3>Session Leaders</h3>
         <ol>
-            <li>Tap <strong>I am a session leader</strong>, enter your access code and OpenAI API key.</li>
-            <li>Choose how people are speaking into the session — <strong>across the room</strong> (Owl, conference mic, speakerphone) or <strong>close to the device</strong> (headset, hand-held, podium mic) — and tap <strong>Start session.</strong></li>
-            <li>Choose <strong>Full translation</strong> if you need a live Spanish translation, or <strong>English captions only</strong> for an English-only meeting that just wants live captions.</li>
+            <li>Tap <strong>I am a session leader</strong> and enter your access code.</li>
+            <li>Choose who can listen to audio: <strong>Spanish</strong>, <strong>English</strong>, or <strong>both</strong>. Everyone always gets English and Spanish captions.</li>
+            <li>Choose where the audio comes from — <strong>this computer</strong> (a microphone, or system audio through BlackHole) or <strong>a Zoom meeting</strong> — and tap <strong>Start session.</strong></li>
+            <li>For a Zoom meeting, open <strong>Apps → Recovery Translator</strong> in the meeting and tap <strong>Start captions</strong>. You can also start the session from the Zoom app directly and post the join link to the meeting chat.</li>
             <li>Share the QR code or session code. Optionally open the <strong>big display screen</strong> for a room projector, or the <strong>captions-only pop-out window</strong> for a simpler view.</li>
-            <li>Speak normally — English is captioned live as you talk.</li>
-            <li><em>Full translation only:</em> when a Spanish speaker will address the room, tap <strong>Spanish speaker (switch)</strong>, or <strong>Approve</strong> their request in the queue. The English box then shows a live English translation of their Spanish, and Spanish attendees see a reminder to listen to the room. Tap the toggle again when they're done.</li>
-            <li>Tap <strong>End session</strong> when the meeting is over.</li>
+            <li>Speak normally, in English or Spanish — both caption boxes update live.</li>
+            <li>Tap <strong>End session</strong> when the meeting is over. Sessions from a Zoom meeting also end on their own when the meeting does.</li>
         </ol>
         <h3>Listeners</h3>
         <ol>
-            <li>Scan the QR code or tap <strong>I am a listener</strong>, enter the session code, choose your language (Spanish only appears for sessions that support it), and tap <strong>Join.</strong></li>
-            <li>Captions appear automatically. Spanish attendees can tap <strong>🔊 Hear translation</strong> to also listen to the translated audio.</li>
-            <li>Spanish attendees can tap <strong>🎙 Request to speak</strong> to ask to address the room.</li>
-            <li>When a Spanish speaker has the floor, Spanish screens pause captions and show a reminder to listen to the room.</li>
+            <li>Scan the QR code or tap <strong>I am a listener</strong>, enter the session code, choose your language, and tap <strong>Join.</strong></li>
+            <li>Captions appear automatically. If the session offers audio in your language, tap <strong>🔊 Listen in English</strong> or <strong>🔊 Escuchar en español</strong> to hear it.</li>
             <li>If you switch apps or lock your phone briefly, reopening the page should reconnect you automatically.</li>
         </ol>
     </div>
@@ -363,13 +378,9 @@
         <h2>About Recovery Translator</h2>
         <p>Recovery Translator provides real-time spoken language interpretation and live captioning for recovery meetings, area committees, and service assemblies.</p>
         <h3>How It Works</h3>
-        <p>The leader opens a session, chooses whether they need Spanish translation or just English captions, and shares a QR code. English speech is captioned live for the room the whole time. In full-translation sessions, Spanish-speaking attendees also get a continuous live Spanish translation. When a Spanish speaker addresses the room, the leader switches modes (or approves their request), and the room sees a live English translation of their words until the leader switches back.</p>
-        <h3>Two Session Types</h3>
-        <p><strong>Full translation</strong> runs English captions and a live Spanish translation side by side. <strong>English captions only</strong> is a lighter option for English-only meetings that still want live, accurate captions — useful for anyone hard of hearing.</p>
+        <p>The leader opens a session and shares a QR code. Whatever language someone speaks, the room gets live English and Spanish captions side by side. Depending on the session, listeners can also hear a live spoken translation in Spanish, English, or both.</p>
         <h3>Getting Access</h3>
-        <p>Leaders need an access code and an OpenAI API key. Listeners only need the session code. To request an access code, contact <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
-        <h3>Cost</h3>
-        <p>Recovery Translator uses OpenAI's real-time transcription and translation APIs, billed to the leader's OpenAI account. Full-translation sessions run more concurrent connections than captions-only sessions. Please check OpenAI's current realtime API pricing for an up-to-date estimate.</p>
+        <p>Leaders need an access code. Listeners only need the session code. To request an access code, contact <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
         <h3>Built for Recovery</h3>
         <p>Built by and for the recovery community, with anonymity and accessibility in mind. Free to use and open source.</p>
     </div>
@@ -382,13 +393,12 @@
     // Everything goes through the server over a WebSocket -- the same
     // pipeline Zoom RTMS feeds. The leader's browser only CAPTURES audio
     // (16kHz mono PCM16, 20ms frames, the RTMS shape) and streams it up.
-    // All OpenAI work, language detection, and translation happen on the
-    // server, so one set of server logs shows everything, locally or deployed.
+    // All translation happens on the server, so one set of server logs
+    // shows everything, locally or deployed.
 
     // ── Shared state ─────────────────────────────────────
     let sessionCode = null, listenerLanguage = null, currentRole = null;
     let signalingWs = null, eventSource = null;
-    let sessionMode = 'bilingual'; // 'bilingual' | 'transcript_only'
     let sessionAudioSource = 'device'; // 'device' | 'zoom'
     let zoomStatusTimer = null;
 
@@ -449,27 +459,6 @@
         return `${proto}//${location.host}?${query}`;
     }
 
-    async function checkSessionModeForJoin() {
-        const code = document.getElementById('session-code-input').value.trim();
-        const spanishOption = document.getElementById('listener-language-spanish');
-        const note = document.getElementById('transcript-only-note');
-        if (code.length !== 6) { spanishOption.style.display = ''; note.style.display = 'none'; return; }
-        try {
-            const res = await fetch(`/session/check?code=${code}`);
-            const data = await res.json();
-            const transcriptOnly = data.exists && data.mode === 'transcript_only';
-            spanishOption.style.display = transcriptOnly ? 'none' : '';
-            note.style.display = transcriptOnly ? '' : 'none';
-            if (transcriptOnly && document.getElementById('listener-language').value === 'spanish') {
-                document.getElementById('listener-language').value = 'english';
-            }
-        } catch (e) { /* leave as-is if the check fails */ }
-    }
-
-    function saveResumeState(s) { localStorage.setItem('rt-session', JSON.stringify(s)); }
-    function clearResumeState() { localStorage.removeItem('rt-session'); }
-    function getResumeState() { try { return JSON.parse(localStorage.getItem('rt-session')); } catch(e){ return null; } }
-
     // ── LEADER ──────────────────────────────────────────
     function updateAudioSourceFields() {
         const zoom = document.getElementById('audio-source').value === 'zoom';
@@ -498,23 +487,18 @@
         // by the time the awaits below finish, that gesture has expired.
         if (!captureCtx) captureCtx = new AudioCtx();
         const accessCode = document.getElementById('access-code').value.trim();
-        let apiKey = document.getElementById('api-key').value.trim();
-        const micDistance = document.getElementById('mic-distance').value;
         const mode = document.getElementById('session-mode').value;
         const audioSource = document.getElementById('audio-source').value;
         if (!accessCode) { showError('leader-error', 'Please enter the access code.'); return; }
-        if (!apiKey) apiKey = 'default-api-key';
         try {
             const res = await fetch('/session/create', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ accessCode, apiKey, micDistance, mode, audioSource })
+                body: JSON.stringify({ accessCode, mode, audioSource })
             });
             const data = await res.json();
             if (!res.ok) { showError('leader-error', data.error || 'Failed to create session.'); return; }
             sessionCode = data.sessionCode;
-            sessionMode = mode;
             sessionAudioSource = audioSource;
-            saveResumeState({ role: 'leader', sessionCode });
             await startLeaderSession(sessionCode);
         } catch (err) { showError('leader-error', 'Could not start the session: ' + err.message); }
     }
@@ -528,8 +512,6 @@
         new QRCode(document.getElementById('qr-container'), { text: url, width: 180, height: 180 });
         document.getElementById('caption-box-en').textContent = '';
         document.getElementById('caption-box-es').textContent = '';
-        document.getElementById('screen-leader-live')
-            .classList.toggle('mode-transcript-only', sessionMode === 'transcript_only');
 
         leaderLive = true;
         subscribeLeaderCaptions(code);
@@ -581,7 +563,7 @@
             return attachCaptions(`/stream/${code}/${lang}`, box);
         };
         leaderEnSource = attach('english', 'caption-box-en');
-        leaderEsSource = sessionMode === 'transcript_only' ? null : attach('spanish', 'caption-box-es');
+        leaderEsSource = attach('spanish', 'caption-box-es');
     }
 
     function openLeaderSignaling(code) {
@@ -650,7 +632,6 @@
             signalingWs.send(JSON.stringify({ type: 'end_session' }));
         }
         teardownLeader();
-        clearResumeState();
         show('screen-landing');
     }
 
@@ -672,7 +653,6 @@
         listenerLanguage = document.getElementById('listener-language').value;
         if (!code || code.length !== 6) { showError('listener-error', 'Please enter a valid 6-character session code.'); return; }
         sessionCode = code;
-        saveResumeState({ role: 'listener', sessionCode: code, language: listenerLanguage });
         startListenerSession(code, listenerLanguage);
     }
 
@@ -689,8 +669,10 @@
             onOpen: () => { document.getElementById('listener-status').textContent = 'Connected'; }
         });
 
-        // Translated audio exists only for the Spanish feed.
-        document.getElementById('audio-toggle-btn').style.display = (language === 'spanish') ? '' : 'none';
+        // Shown once the server says this session has audio in this language.
+        const btn = document.getElementById('audio-toggle-btn');
+        btn.style.display = 'none';
+        btn.textContent = audioButtonLabel();
         openListenerSignaling(code, language);
         show('screen-listener-live');
     }
@@ -700,7 +682,6 @@
         if (eventSource) eventSource.close();
         stopAudioPlayback();
         if (signalingWs) { signalingWs.onclose = null; signalingWs.close(); signalingWs = null; }
-        clearResumeState();
         const b = document.getElementById('caption-box');
         b.style.display = 'flex'; b.style.alignItems = 'center'; b.style.justifyContent = 'center';
         b.style.color = '#718096'; b.style.fontSize = '18px';
@@ -719,7 +700,10 @@
         signalingWs.onmessage = (event) => {
             if (event.data instanceof ArrayBuffer) { playTranslatedAudio(event.data); return; }
             const msg = JSON.parse(event.data);
-            if (msg.type === 'welcome') listenerId = msg.listenerId;
+            if (msg.type === 'welcome') {
+                listenerId = msg.listenerId;
+                if (!listenerEnded) document.getElementById('audio-toggle-btn').style.display = msg.audio ? '' : 'none';
+            }
         };
         signalingWs.onclose = () => {
             if (listenerEnded || currentRole !== 'listener') return;
@@ -735,7 +719,7 @@
             if (signalingWs && signalingWs.readyState === WebSocket.OPEN) {
                 signalingWs.send(JSON.stringify({ type: 'stop_audio' }));
             }
-            btn.textContent = '🔊 Hear translation';
+            btn.textContent = audioButtonLabel();
             statusEl.textContent = '';
             return;
         }
@@ -752,8 +736,14 @@
         if (signalingWs && signalingWs.readyState === WebSocket.OPEN) {
             signalingWs.send(JSON.stringify({ type: 'request_audio' }));
         }
-        btn.textContent = '🔇 Stop audio';
-        statusEl.textContent = 'Listening — audio starts with the next translated sentence.';
+        btn.textContent = listenerLanguage === 'spanish' ? '🔇 Detener audio' : '🔇 Stop audio';
+        statusEl.textContent = listenerLanguage === 'spanish'
+            ? 'Escuchando — el audio empieza con la próxima frase.'
+            : 'Listening — audio starts with the next sentence.';
+    }
+
+    function audioButtonLabel() {
+        return listenerLanguage === 'spanish' ? '🔊 Escuchar en español' : '🔊 Listen in English';
     }
 
     function stopAudioPlayback() {
@@ -761,7 +751,7 @@
         if (playCtx) { playCtx.close(); playCtx = null; }
     }
 
-    // Each binary message is PCM16 24kHz mono from OpenAI. Schedule chunks
+    // Each binary message is PCM16 24kHz mono from Gemini. Schedule chunks
     // back-to-back so playback is gapless while translation is flowing.
     function playTranslatedAudio(buffer) {
         if (!audioOn || !playCtx) return;
@@ -832,7 +822,6 @@
         const urlParams = new URLSearchParams(location.search);
         if (urlParams.has('join')) {
             document.getElementById('session-code-input').value = urlParams.get('join');
-            checkSessionModeForJoin();
             show('screen-listener-onboard');
         }
     });

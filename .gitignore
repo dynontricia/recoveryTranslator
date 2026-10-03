@@ -155,3 +155,6 @@ vite.config.ts.timestamp-*
 node_modules
 /.idea/
 /data/
+
+# macOS
+.DS_Store
