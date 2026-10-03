@@ -11,6 +11,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@google/genai": "^2.27.0",
     "@zoom/rtms": "^1.1.0",
     "dotenv": "^17.4.2",
     "franc-min": "^6.2.0",
