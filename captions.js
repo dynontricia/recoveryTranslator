@@ -1,17 +1,13 @@
 // Shared caption renderer for every page that shows live captions.
 //
 // The server sends two kinds of messages on /stream/<code>/<language>:
-//   {type:'line', id, text} -- English: the current text of sentence `id`.
-//                              A later message with the same id REPLACES it
-//                              (used to swap in translations after the fact).
-//   {text}                  -- Spanish: plain text to append.
+//   {text}                  -- caption text to append.
 //   {type:'session_ended'}  -- the session is over.
 //
-// Usage: const stream = attachCaptions(url, boxElement, { onEnded });
+// Usage: const stream = attachCaptions(url, boxElement, { onEnded, onOpen, onError });
 //        stream.close() to stop.
 function attachCaptions(url, box, opts) {
     opts = opts || {};
-    const lines = new Map();
     const source = new EventSource(url);
 
     // Only follow new text if the reader is already at the bottom, so
@@ -26,20 +22,9 @@ function attachCaptions(url, box, opts) {
             if (opts.onEnded) opts.onEnded();
             return;
         }
+        if (!data.text) return;
         const follow = nearBottom();
-        if (data.type === 'line') {
-            let el = lines.get(data.id);
-            if (!el) {
-                el = document.createElement('span');
-                lines.set(data.id, el);
-                box.appendChild(el);
-            }
-            el.textContent = data.text;
-        } else if (data.text) {
-            box.appendChild(document.createTextNode(data.text));
-        } else {
-            return;
-        }
+        box.appendChild(document.createTextNode(data.text));
         if (follow) box.scrollTop = box.scrollHeight;
     };
     if (opts.onOpen) source.onopen = opts.onOpen;

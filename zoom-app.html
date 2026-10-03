@@ -93,12 +93,12 @@
     <label for="access-code">Access code</label>
     <input type="password" id="access-code" autocomplete="off" required/>
 
-    <label for="api-key">OpenAI API key</label>
-    <input type="password" id="api-key" placeholder="Leave blank to use the server's key" autocomplete="off"/>
 
-    <label for="session-mode">What does this session need?</label>
+    <label for="session-mode">Who should be able to listen to audio?</label>
     <select id="session-mode">
-        <option value="bilingual">Full translation — English and Spanish</option>
+        <option value="audio_es">English text · Spanish text &amp; audio</option>
+        <option value="audio_en">English text &amp; audio · Spanish text</option>
+        <option value="audio_both">English text &amp; audio · Spanish text &amp; audio</option>
     </select>
 
     <p class="hint">Audio comes from this Zoom meeting. You can also start a session in the browser
@@ -148,7 +148,7 @@
 <script>
     // The SDK defines window.zoomSdk globally -- don't redeclare it.
     const sdk = window.zoomSdk;
-    let sessionCode = null, sessionMode = 'bilingual';
+    let sessionCode = null;
     let display = 'english';
     let enSource = null, esSource = null;
     let lookTimer = null, audioTimer = null;
@@ -192,7 +192,7 @@
             return;
         }
         applyTextSize();
-        // Remember the access code between meetings (never the API key).
+        // Remember the access code between meetings.
         try { $('access-code').value = localStorage.getItem('rt-access-code') || ''; } catch (e) {}
 
         const existing = await fetchCurrentSession();
@@ -239,7 +239,6 @@
 
     async function createSessionFromZoom() {
         const accessCode = $('access-code').value.trim();
-        const apiKey = $('api-key').value.trim() || 'default-api-key';
         const mode = $('session-mode').value;
         if (!accessCode) return;
         $('create-btn').disabled = true;
@@ -247,7 +246,7 @@
         try {
             const res = await fetch('/session/create', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ accessCode, apiKey, mode, audioSource: 'zoom' })
+                body: JSON.stringify({ accessCode, mode, audioSource: 'zoom' })
             });
             const data = await res.json();
             if (!res.ok) {
@@ -257,7 +256,7 @@
             }
             try { localStorage.setItem('rt-access-code', accessCode); } catch (e) {}
             log(`Session ${data.sessionCode} created (Zoom audio: ${data.zoomAudio})`);
-            showSession({ sessionCode: data.sessionCode, mode, audioConnected: data.zoomAudio === 'connected' });
+            showSession({ sessionCode: data.sessionCode, audioConnected: data.zoomAudio === 'connected' });
             // Starting a session from Zoom means "caption this meeting now".
             if (data.zoomAudio !== 'connected') startCaptions();
         } catch (err) {
@@ -274,8 +273,7 @@
         pendingBrowserSession = null;
         unsubscribe();
         sessionCode = data.sessionCode;
-        sessionMode = data.mode;
-        log(`Session ${sessionCode} (${sessionMode})`);
+        log(`Session ${sessionCode}`);
 
         const joinUrl = `${location.origin}?join=${sessionCode}`;
         $('join-info').innerHTML = `Session <strong>${sessionCode}</strong> · listeners join at <a href="${joinUrl}" target="_blank">${joinUrl}</a>`;
@@ -284,10 +282,6 @@
         $('controls-summary').textContent = `Session ${sessionCode} · controls`;
         captionsWereRunning = false;
         $('captions').style.display = '';
-        // Spanish is only offered when the session produces it.
-        const bilingual = sessionMode !== 'transcript_only';
-        $('display-toggle').style.display = bilingual ? '' : 'none';
-        if (!bilingual) display = 'english';
         subscribe();
         setCaptionsRunning(!!data.audioConnected);
         watchAudio();
@@ -329,9 +323,7 @@
     async function postLinkToChat() {
         if (!sessionCode) return;
         const joinUrl = `${location.origin}?join=${sessionCode}`;
-        const message = sessionMode === 'transcript_only'
-            ? `Live captions: ${joinUrl}`
-            : `Live captions and Spanish translation: ${joinUrl}\nSubtítulos y traducción al español en vivo: ${joinUrl}`;
+        const message = `Live captions and Spanish translation: ${joinUrl}\nSubtítulos y traducción al español en vivo: ${joinUrl}`;
         const btn = $('chat-link-btn');
         btn.disabled = true;
         try {
@@ -347,6 +339,15 @@
     }
 
     async function stopCaptions() {
+        // Tell the server this is a pause, so the session stays open.
+        try {
+            await fetch('/zoom/pause', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionCode })
+            });
+        } catch (err) {
+            log('Pause failed: ' + err.message);
+        }
         try {
             const r = await sdk.stopRTMS();
             log('stopRTMS: ' + JSON.stringify(r));
@@ -411,7 +412,7 @@
     function subscribe() {
         if (!sessionCode) return;
         if (!enSource) enSource = attach('english', 'cap-en');
-        const showEs = display === 'both' && sessionMode !== 'transcript_only';
+        const showEs = display === 'both';
         $('cap-es-wrap').style.display = showEs ? '' : 'none';
         if (showEs && !esSource) esSource = attach('spanish', 'cap-es');
         if (!showEs && esSource) { esSource.close(); esSource = null; }
