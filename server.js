@@ -701,12 +701,14 @@ function openGeminiConnection(pipeline, pipeSession, targetLanguage, resMode, wh
             if (!transcriptOnly) {
                 let lang = targetLanguage === 'en' ? 'english' : 'spanish';
                 broadcast(pipeline.sessionCode, lang, text);
-                queueZoomCaption(pipeline, text, 'es-ES');
+                queueZoomCaption(pipeline, text, targetLanguage === 'en' ? 'en-US' : 'es-ES');
             }
         }
 
-        // Spanish audio -> listeners who tapped "Hear translation"
-        if (sc.modelTurn && sc.modelTurn.parts && !transcriptOnly) {
+        // Spanish audio -> listeners who tapped "Hear translation". Only the
+        // Spanish connection's audio: the English connection echoes English
+        // speech back as English audio, which must never reach listeners.
+        if (targetLanguage === 'es' && sc.modelTurn && sc.modelTurn.parts && !transcriptOnly) {
             for (const part of sc.modelTurn.parts) {
                 if (part.inlineData && part.inlineData.data) {
                     if (!pipeline.loggedFirstAudio) {
@@ -847,15 +849,8 @@ function createCaptionPipeline(streamKey, sessionCode) {
     };
     rtmsCaptionPipelines.set(streamKey, pipeline);
 
-    // Which OpenAI sessions run -- one place to change it for Zoom AND tests.
-    const englishOnly = sessions[sessionCode] && sessions[sessionCode].mode === 'transcript_only';
-    if (ENGLISH_SOURCE === 'dedicated') connectEnglishTranscriptionWs(pipeline);
-    // English-only sessions with a dedicated transcript don't need a
-    // translator at all.
-    if (!(englishOnly && ENGLISH_SOURCE === 'dedicated')) {
-        if (TRANSLATE_PROVIDER === 'gemini') connectGeminiTranslator(pipeline);
-        //else connectTranslateWs(pipeline, 'es', 'esWs', 'esReady', 'spanish');
-    }
+    // Every session gets both English and Spanish from Gemini.
+    connectGeminiTranslator(pipeline);
     return pipeline;
 }
 
@@ -907,7 +902,8 @@ function teardownCaptionPipeline(streamKey) {
     if (pipeline.transcribeWs) pipeline.transcribeWs.close();
     if (pipeline.enWs) pipeline.enWs.close();
     if (pipeline.esWs) pipeline.esWs.close();
-    closeGeminiTranslator(pipeline);
+    closeGeminiTranslator(pipeline.gemini_es);
+    closeGeminiTranslator(pipeline.gemini_en);
     rtmsCaptionPipelines.delete(streamKey);
 }
 
@@ -921,7 +917,7 @@ function createSession(apiKey, micDistance, mode, audioSource) {
     sessions[code] = {
         apiKey,
         micDistance: micDistance === 'near_field' ? 'near_field' : 'far_field',
-        mode: mode === 'transcript_only' ? 'transcript_only' : 'bilingual',
+        mode: 'bilingual',          // every session needs English and Spanish
         audioSource: audioSource === 'zoom' ? 'zoom' : 'device',
         englishLines: new Map(),   // line id -> text, replayed to screens that join late
         nextLineId: 0,
