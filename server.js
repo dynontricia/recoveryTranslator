@@ -495,11 +495,11 @@ function findPipelineBySession(sessionCode) {
 }
 
 // ---- HTTP -------------------------------------------------------------------
-function serveFile(res, filePath, contentType, extraHeaders) {
+function serveFile(req, res, filePath, contentType, extraHeaders) {
     fs.readFile(filePath, (err, data) => {
         if (err) { res.writeHead(err.code === 'ENOENT' ? 404 : 500); res.end(); return; }
         res.writeHead(200, { 'Content-Type': contentType, ...(extraHeaders || {}) });
-        res.end(data);
+        res.end(req.method === 'HEAD' ? undefined : data);
     });
 }
 
@@ -519,12 +519,30 @@ function readJson(req, callback) {
     });
 }
 
-// Zoom's app review runs an automated OWASP header check on the Home URL,
-// so these headers are scoped to the Zoom panel page.
-const ZOOM_APP_SECURITY_HEADERS = {
+// Zoom's app review runs an automated OWASP header check, so every response
+// carries these; HTML pages add a Content-Security-Policy of their own.
+const SECURITY_HEADERS = {
     'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'"
+};
+
+// Browser pages: QR code library from cdnjs, the audio worklet loads from a
+// blob: URL, and the QR code renders as a data: image.
+const APP_PAGE_HEADERS = {
+    'Content-Security-Policy': [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' blob: https://cdnjs.cloudflare.com",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "connect-src 'self'",
+        "frame-ancestors 'self'"
+    ].join('; ')
+};
+
+// The panel that runs inside the Zoom client.
+const ZOOM_APP_HEADERS = {
     'Content-Security-Policy': [
         "default-src 'self'",
         "script-src 'self' 'unsafe-inline' https://appssdk.zoom.us",
@@ -535,14 +553,14 @@ const ZOOM_APP_SECURITY_HEADERS = {
 };
 
 const STATIC_FILES = {
-    '/': ['index.html', 'text/html; charset=UTF-8'],
-    '/index.html': ['index.html', 'text/html; charset=UTF-8'],
-    '/display': ['display.html', 'text/html; charset=UTF-8'],
-    '/display.html': ['display.html', 'text/html; charset=UTF-8'],
-    '/transcript': ['transcript.html', 'text/html; charset=UTF-8'],
-    '/transcript.html': ['transcript.html', 'text/html; charset=UTF-8'],
-    '/zoom-app': ['zoom-app.html', 'text/html; charset=UTF-8', ZOOM_APP_SECURITY_HEADERS],
-    '/zoom-app.html': ['zoom-app.html', 'text/html; charset=UTF-8', ZOOM_APP_SECURITY_HEADERS],
+    '/': ['index.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
+    '/index.html': ['index.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
+    '/display': ['display.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
+    '/display.html': ['display.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
+    '/transcript': ['transcript.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
+    '/transcript.html': ['transcript.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
+    '/zoom-app': ['zoom-app.html', 'text/html; charset=UTF-8', ZOOM_APP_HEADERS],
+    '/zoom-app.html': ['zoom-app.html', 'text/html; charset=UTF-8', ZOOM_APP_HEADERS],
     '/captions.js': ['captions.js', 'application/javascript; charset=UTF-8'],
     '/logo.png': ['recoveryTrans.png', 'image/png']
 };
@@ -556,10 +574,12 @@ try { fs.mkdirSync('/app/logs', { recursive: true }); } catch (e) {
 const server = http.createServer((req, res) => {
     const parsedUrl = new URL(req.url, `http://localhost:${PORT}`);
     const pathname = parsedUrl.pathname;
+    for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
 
-    if (req.method === 'GET' && STATIC_FILES[pathname]) {
+    // HEAD too: header scanners often send HEAD rather than GET.
+    if ((req.method === 'GET' || req.method === 'HEAD') && STATIC_FILES[pathname]) {
         const [file, contentType, headers] = STATIC_FILES[pathname];
-        serveFile(res, path.join(__dirname, file), contentType, headers);
+        serveFile(req, res, path.join(__dirname, file), contentType, headers);
     }
 
     else if (req.method === 'POST' && pathname === '/session/create') {
