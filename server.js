@@ -44,8 +44,18 @@ function audioLanguages(session) {
     return ['spanish'];
 }
 
+// Session codes are what let someone read a meeting's captions, so they come
+// from a cryptographically secure source, not Math.random().
+const CODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+function randomCode() {
+    let code = '';
+    for (let i = 0; i < 6; i++) code += CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)];
+    return code;
+}
+
 function createSession(mode, audioSource) {
-    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+    let code;
+    do { code = randomCode(); } while (sessions[code]);
     sessions[code] = {
         mode: SESSION_MODES.includes(mode) ? mode : 'audio_es',
         audioSource: audioSource === 'zoom' ? 'zoom' : 'device',
@@ -99,7 +109,7 @@ function broadcast(sessionCode, language, text) {
     });
 }
 
-// Audio is PCM16 24kHz mono. Sent as binary to every listener of this
+// Audio is PCM16 24kHz mono. Sent as a binary to every listener of this
 // language who tapped the audio button.
 function relayTranslatedAudio(sessionCode, language, pcmBuffer) {
     const session = sessions[sessionCode];
@@ -117,7 +127,7 @@ function relayTranslatedAudio(sessionCode, language, pcmBuffer) {
 
 // ---- Zoom audio <-> session pairing ----------------------------------------
 // A session started with "Zoom meeting" as its audio input waits for Zoom's
-// audio stream; a Zoom stream that arrives first (e.g. RTMS auto-start)
+// audio stream; a Zoom stream that arrives first (e.g., RTMS auto-start)
 // waits for a session. Whichever shows up second connects them. Until
 // then, Zoom audio is ignored -- no Gemini connection, no cost.
 // Pairs one meeting at a time: the most recent waiting session.
@@ -242,27 +252,6 @@ function stopRtmsStream(streamId) {
     }
 }
 
-// ---- Zoom OAuth tokens ------------------------------------------------------
-// Saved when the Zoom app is installed/authorized. On Railway, attach a
-// Volume (e.g. mounted at /data) and set ZOOM_TOKEN_FILE=/data/zoom-tokens.json,
-// otherwise the file is wiped on every deploy.
-const ZOOM_TOKEN_FILE = process.env.ZOOM_TOKEN_FILE || path.join(__dirname, 'data', 'zoom-tokens.json');
-
-function storeZoomTokens(data) {
-    const tokens = {
-        access_token: data.access_token,
-        refresh_token: data.refresh_token,
-        expires_at: Date.now() + (data.expires_in || 3600) * 1000,
-        scope: data.scope
-    };
-    try {
-        fs.mkdirSync(path.dirname(ZOOM_TOKEN_FILE), { recursive: true });
-        fs.writeFileSync(ZOOM_TOKEN_FILE, JSON.stringify(tokens), { mode: 0o600 });
-    } catch (e) {
-        console.error(`Could not save Zoom tokens to ${ZOOM_TOKEN_FILE}:`, e.message);
-    }
-}
-
 // ---- Gemini Live Translate --------------------------------------------------
 // Each session runs two translators over the same audio: one into English and
 // one into Spanish. Each gives captions (outputTranscription) and, when the
@@ -272,7 +261,7 @@ function storeZoomTokens(data) {
 //
 // Input is PCM16 16kHz -- what Zoom RTMS and the browser already send -- so
 // no resampling. Google recommends ~100ms chunks; our frames are 20ms, so
-// five are batched per send.
+// five are batched per sent package.
 //
 // A Gemini Live connection lasts ~10 minutes; Google sends `goAway` about a
 // minute before it ends. For long meetings we do a rolling hand-off: open a
@@ -393,7 +382,7 @@ function openGeminiConnection(t, why) {
     });
 }
 
-// A new connection is ready: send audio to it, and retire the old one.
+// A new connection is ready: send audio to it and retire the old one.
 function promoteGeminiConnection(t, conn) {
     if (t.closed) { conn.ws.close(); return; }
     conn.ready = true;
@@ -509,6 +498,30 @@ function sendJson(res, status, obj) {
 }
 
 // Reads a JSON request body; a missing or malformed body reads as {}.
+// Zoom signs every webhook request (including the URL validation challenge):
+//   x-zm-signature = "v0=" + HMAC-SHA256(secret, "v0:{timestamp}:{raw body}")
+// Anything unsigned, wrongly signed, or older than 5 minutes is rejected, so
+// nobody who finds the URL can fake "stream started/stopped" events -- or use
+// the validation challenge to get our secret to sign text of their choosing.
+const ZOOM_WEBHOOK_MAX_AGE_S = 300;
+
+function verifyZoomSignature(req, rawBody) {
+    const secret = process.env.ZOOM_WEBHOOK_SECRET_TOKEN;
+    const timestamp = req.headers['x-zm-request-timestamp'];
+    const signature = req.headers['x-zm-signature'];
+    if (!secret || !timestamp || !signature) return false;
+    if (Math.abs(Date.now() / 1000 - Number(timestamp)) > ZOOM_WEBHOOK_MAX_AGE_S) return false;
+    const expected = 'v0=' + crypto.createHmac('sha256', secret).update(`v0:${timestamp}:${rawBody}`).digest('hex');
+    const a = Buffer.from(signature), b = Buffer.from(expected);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function readRawBody(req, callback) {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => callback(Buffer.concat(chunks).toString('utf8')));
+}
+
 function readJson(req, callback) {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -632,7 +645,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Panel's "Start captions": claim Zoom audio for this session (now, or
+        // Panel's "Start captions": claim Zoom audio for this session (now, or
     // as soon as the stream starts).
     else if (req.method === 'POST' && pathname === '/zoom/connect') {
         readJson(req, (body) => {
@@ -641,7 +654,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Panel's "Stop captions": the stream stopping next is a pause, so the
+        // Panel's "Stop captions": the stream stopping next is a pause, so the
     // session stays open for listeners.
     else if (req.method === 'POST' && pathname === '/zoom/pause') {
         readJson(req, (body) => {
@@ -661,13 +674,21 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Zoom RTMS webhook:
-    //   endpoint.url_validation -- Zoom's challenge when the URL is saved in
-    //     the Zoom console; we echo back an HMAC-signed token.
-    //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
+        // Zoom RTMS webhook:
+        //   endpoint.url_validation -- Zoom's challenge when the URL is saved in
+        //     the Zoom console; we echo back an HMAC-signed token.
+        //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
     //     meeting's audio stream.
     else if (req.method === 'POST' && pathname === '/zoom/rtms-webhook') {
-        readJson(req, (payload) => {
+        readRawBody(req, (rawBody) => {
+            if (!verifyZoomSignature(req, rawBody)) {
+                console.warn('Zoom webhook rejected: missing, invalid, or expired signature');
+                res.writeHead(401); res.end('Invalid signature'); return;
+            }
+            let payload = {};
+            try { payload = JSON.parse(rawBody); } catch (e) {
+                res.writeHead(400); res.end('Invalid JSON'); return;
+            }
             if (payload.event === 'endpoint.url_validation') {
                 const plainToken = payload.payload && payload.payload.plainToken;
                 const secret = process.env.ZOOM_WEBHOOK_SECRET_TOKEN;
@@ -700,8 +721,8 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // OAuth redirect target. Zoom sends the user here (with a one-time
-    // ?code=...) after they click Allow on the app's consent screen. This URL
+        // OAuth redirect target. Zoom sends the user here (with a one-time
+        // ?code=...) after they click Allow on the app's consent screen. This URL
     // must match the redirect URI registered in the Zoom console.
     else if (req.method === 'GET' && pathname === '/zoom/oauth/callback') {
         const code = parsedUrl.searchParams.get('code');
@@ -736,7 +757,9 @@ const server = http.createServer((req, res) => {
                     res.end('<p>Zoom rejected the authorization. Please try installing the app again.</p>');
                     return;
                 }
-                storeZoomTokens(tokenData);
+                // The exchange completes Zoom's 'install flow'. The server makes
+                // no Zoom API calls, so the tokens are not kept -- they're
+                // discarded here and never written to disk or logs.
                 console.log('Zoom OAuth success. Scopes granted:', tokenData.scope);
                 res.writeHead(200, { 'Content-Type': 'text/html' });
                 res.end('<p>Recovery Translator is authorized. You can close this window and return to Zoom.</p>');
@@ -775,7 +798,7 @@ wss.on('connection', (ws, req) => {
     if (role === 'leader') {
         session.leaderSocket = ws;
         const pipelineKey = 'leader-' + sessionCode;
-        // A reconnect (tab resume, network blip) cancels a pending teardown,
+        // Clicking reconnect (tab resume, network blip) cancels a pending teardown,
         // so the same pipeline keeps running.
         if (session.leaderTeardownTimer) {
             clearTimeout(session.leaderTeardownTimer);
@@ -802,7 +825,7 @@ wss.on('connection', (ws, req) => {
 
         ws.on('close', () => {
             // Only the CURRENT leader socket closing matters; a stale one
-            // replaced by a reconnect must not tear anything down.
+            // replaced by a reconnecting call must not tear anything down.
             if (session.leaderSocket !== ws || session.ended) return;
             // Give the leader a minute to come back before stopping
             // translation, so a brief drop doesn't interrupt the meeting.
@@ -813,7 +836,7 @@ wss.on('connection', (ws, req) => {
         });
 
     } else if (role === 'listener') {
-        const id = Math.random().toString(36).substring(2, 8);
+        const id = randomCode();
         const language = params.get('language') === 'spanish' ? 'spanish' : 'english';
         session.listenerSockets[id] = { ws, language, wantsAudio: false };
         // Tells the page whether to offer the audio button for this language.

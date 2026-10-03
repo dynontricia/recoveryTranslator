@@ -91,13 +91,14 @@
 
 <script src="/captions.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<!--suppress JSUnresolvedReference -->
 <script>
     const params = new URLSearchParams(location.search);
     const code = (params.get('session') || '').toUpperCase();
 
     if (!code) {
         document.getElementById('layout').innerHTML =
-            '<div class="err">No session code. Open this page from the leader screen, or add ?session=CODE to the URL.</div>';
+            '<div class="err">No session code. Open this page from the leader screen or add ?session=CODE to the URL.</div>';
     } else {
         document.getElementById('code').textContent = code;
         const joinUrl = `${location.origin}?join=${code}`;

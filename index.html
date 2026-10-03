@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!--suppress HtmlUnknownTarget, HtmlFormInputWithoutLabel -->
 <html lang="en">
 <head>
     <meta charset="UTF-8"/>
@@ -143,7 +144,7 @@
 </head>
 <body>
 <div style="flex:1;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;">
-    <div class="logo"><img src="/logo.png"/></div>
+    <div class="logo"><img src="/logo.png" alt="logo"/></div>
 
     <!-- SCREEN 1: Landing -->
     <div class="screen active" id="screen-landing">
@@ -330,11 +331,11 @@
         <ul>
             <li><strong>During a session:</strong> the session code, and which screens are connected to it. This is held in memory only and deleted when the session ends.</li>
             <li><strong>Technical logs:</strong> our hosting provider keeps routine logs, such as session codes, connection and error events, and Zoom stream IDs. These logs never include audio, captions, translations, or names.</li>
-            <li><strong>Zoom app:</strong> when the Zoom app is installed, Zoom gives us an authorization token for the Zoom account that installed it. We store that token securely, and use it only for the Recovery Translator Zoom app.</li>
+            <li><strong>Zoom app:</strong> when the Zoom app is installed, Zoom sends us an authorization token. We use it only to finish the installation, and we don't keep it.</li>
         </ul>
 
         <h3>What stays on your device</h3>
-        <p>Some pages remember small settings in your browser, such as caption text size and display colors. The Zoom app also remembers the leader's access code. These stay on your device and are never sent to us. We do not use cookies.</p>
+        <p>Some pages remember small settings in your browser, such as caption text size and display colors. The Zoom app also remembers the leader's access code. These stay on your device. The access code is sent to us only when you start a session, to check it, and is not stored. We do not use cookies.</p>
 
         <h3>Other services</h3>
         <p>Like any website, our hosting provider can see the IP address of each visitor. The pages load a QR-code library from Cloudflare's cdnjs, and the Zoom app loads Zoom's own app software. When used inside Zoom, Zoom's privacy policy also applies.</p>

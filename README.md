@@ -63,7 +63,6 @@ Environment variables (put them in `.env` locally):
 | `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` | Zoom app authorization |
 | `ZM_RTMS_CLIENT`, `ZM_RTMS_SECRET` | Joining Zoom audio streams (read by `@zoom/rtms`) |
 | `ZOOM_WEBHOOK_SECRET_TOKEN` | Verifying the Zoom webhook URL |
-| `ZOOM_TOKEN_FILE` | Optional. Where Zoom OAuth tokens are saved (default `data/zoom-tokens.json`) |
 
 Zoom app settings point at:
 
@@ -72,6 +71,8 @@ Zoom app settings point at:
 - Event webhook (RTMS started/stopped): `/zoom/rtms-webhook`
 
 Sessions live in memory only, so restarting the server ends every session.
+
+Every Zoom webhook request is checked against Zoom's signature (`x-zm-signature`) and rejected if it's missing, wrong, or more than 5 minutes old. Zoom OAuth tokens are used only to complete installation and are never stored.
 
 ## Privacy
 
