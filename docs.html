@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Documentation — Recovery Translator</title>
+<link rel="icon" href="/logo.png"/>
+<style>
+  :root { --ink:#1a202c; --muted:#4a5568; --line:#e2e8f0; --accent:#4f46e5; --bg:#f7fafc; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; color:var(--ink); background:var(--bg); line-height:1.6; }
+  header { background:#fff; border-bottom:1px solid var(--line); }
+  .bar { max-width:820px; margin:0 auto; padding:14px 20px; display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; }
+  .brand { font-weight:700; color:var(--ink); text-decoration:none; margin-right:auto; }
+  nav a { color:var(--muted); text-decoration:none; font-size:15px; margin-left:14px; }
+  nav a[aria-current] { color:var(--accent); font-weight:600; }
+  main { max-width:820px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:30px; margin:0 0 4px; }
+  .date { color:var(--muted); font-size:14px; margin:0 0 20px; }
+  .intro { font-size:17px; }
+  h2 { font-size:21px; margin:34px 0 8px; padding-top:10px; border-top:1px solid var(--line); }
+  h3 { font-size:17px; margin:24px 0 6px; }
+  a { color:var(--accent); }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin:14px 0; }
+  footer { max-width:820px; margin:0 auto; padding:0 20px 40px; color:var(--muted); font-size:14px; }
+</style>
+</head>
+<body>
+<header><div class="bar"><a class="brand" href="/">Recovery Translator</a><nav><a href="/docs" aria-current="page">Documentation</a><a href="/support">Support</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav></div></header>
+<main>
+<h1>Documentation</h1>
+<p class="date">Last updated: October 8, 2026</p>
+<p class="intro">How to add, use, and remove Recovery Translator.</p>
+
+<h2 id="what">What it does</h2>
+<p>Recovery Translator gives a meeting live English and Spanish captions, whatever language someone speaks, plus an optional spoken translation people can listen to on their own phone. Listeners need no account or app; they join with a 6-character session code or QR code.</p>
+<p>Audio can come from a computer's microphone (or its system audio), or from a Zoom meeting through the Recovery Translator Zoom app. Translation is done by Google's Gemini Live API.</p>
+
+<h2 id="requirements">Requirements</h2>
+<ul>
+  <li>An access code to start sessions. Listeners don't need one. To request an access code, email <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</li>
+  <li>For the Zoom app: a Zoom account that can host meetings, the Zoom desktop client, and Zoom's <strong>Realtime Media Streams</strong> enabled for your account. You'll be asked to allow the app to access meeting audio when you start captions.</li>
+  <li>Listeners: any phone, tablet, or computer with a current web browser.</li>
+</ul>
+
+<h2 id="add">Adding the Zoom app</h2>
+<ol>
+  <li>Sign in to the Zoom App Marketplace and open the <strong>Recovery Translator</strong> listing.</li>
+  <li>Click <strong>Add</strong>, review the permissions, and click <strong>Allow</strong>.</li>
+  <li>The app now appears under <strong>Apps</strong> in your Zoom meetings.</li>
+</ol>
+
+<h2 id="zoom">Using it in a Zoom meeting</h2>
+<ol>
+  <li>Start your meeting and open <strong>Apps → Recovery Translator</strong>.</li>
+  <li>Enter your access code, choose the session type, and tap <strong>Start session</strong>. (Or start the session on the website, choose <strong>A Zoom meeting</strong> as the audio source, and the panel will pick it up.)</li>
+  <li>Allow Zoom to share meeting audio with the app when prompted. Captions appear in the panel within a few seconds.</li>
+  <li>Tap <strong>Post join link to meeting chat</strong> so participants can follow along on their own device, in English or Spanish.</li>
+  <li>Use <strong>Pause</strong> to stop sending audio for part of a meeting, and <strong>End session</strong> when you're done. The session also ends when the meeting ends.</li>
+</ol>
+<p>The panel's text-size buttons (A− / A+) and the <strong>English</strong> / <strong>English + Español</strong> switch change only your own view.</p>
+
+<h2 id="browser">Using it without Zoom</h2>
+<h3>Session leaders</h3>
+        <ol>
+            <li>Tap <strong>I am a session leader</strong> and enter your access code.</li>
+            <li>Choose who can listen to audio: <strong>Spanish</strong>, <strong>English</strong>, or <strong>both</strong>. Everyone always gets English and Spanish captions.</li>
+            <li>Choose where the audio comes from — <strong>this computer</strong> (a microphone, or system audio through BlackHole) or <strong>a Zoom meeting</strong> — and tap <strong>Start session.</strong></li>
+            <li>For a Zoom meeting, open <strong>Apps → Recovery Translator</strong> in the meeting and tap <strong>Start captions</strong>. You can also start the session from the Zoom app directly and post the join link to the meeting chat.</li>
+            <li>Share the QR code or session code. Optionally open the <strong>big display screen</strong> for a room projector, or the <strong>captions-only pop-out window</strong> for a simpler view.</li>
+            <li>Speak normally, in English or Spanish — both caption boxes update live.</li>
+            <li>Tap <strong>End session</strong> when the meeting is over. Sessions from a Zoom meeting also end on their own when the meeting does.</li>
+        </ol>
+        <h3>Listeners</h3>
+        <ol>
+            <li>Scan the QR code or tap <strong>I am a listener</strong>, enter the session code, choose your language, and tap <strong>Join.</strong></li>
+            <li>Captions appear automatically. If the session offers audio in your language, tap <strong>🔊 Listen in English</strong> or <strong>🔊 Escuchar en español</strong> to hear it.</li>
+            <li>If you switch apps or lock your phone briefly, reopening the page should reconnect you automatically.</li>
+        </ol>
+
+<h2 id="remove">Removing the Zoom app</h2>
+<ol>
+  <li>Sign in to the Zoom App Marketplace.</li>
+  <li>Click <strong>Manage → Added Apps</strong>.</li>
+  <li>Find <strong>Recovery Translator</strong> and click <strong>Remove</strong>.</li>
+</ol>
+<p>Recovery Translator does not store any Zoom user data, so nothing remains with us after removal. See the <a href="/privacy">Privacy Policy</a>.</p>
+
+<h2 id="data">Data and privacy, in brief</h2>
+<ul>
+  <li>No accounts or names are collected, and no audio, captions, or translations are saved.</li>
+  <li>Meeting audio is sent over an encrypted connection to Google's paid Gemini API for translation. Google does not use it to improve its products, and keeps it for up to 55 days for abuse monitoring only.</li>
+  <li>Everything said while captions are running is sent for translation. Leaders should tell the group at the start of the meeting.</li>
+</ul>
+<p>Full details: <a href="/privacy">Privacy Policy</a>.</p>
+
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p>See <a href="/support#troubleshooting">Support</a>.</p>
+
+</main>
+<footer>Questions? Email <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</footer>
+</body>
+</html>

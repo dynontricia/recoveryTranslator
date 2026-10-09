@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Privacy Policy — Recovery Translator</title>
+<link rel="icon" href="/logo.png"/>
+<style>
+  :root { --ink:#1a202c; --muted:#4a5568; --line:#e2e8f0; --accent:#4f46e5; --bg:#f7fafc; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; color:var(--ink); background:var(--bg); line-height:1.6; }
+  header { background:#fff; border-bottom:1px solid var(--line); }
+  .bar { max-width:820px; margin:0 auto; padding:14px 20px; display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; }
+  .brand { font-weight:700; color:var(--ink); text-decoration:none; margin-right:auto; }
+  nav a { color:var(--muted); text-decoration:none; font-size:15px; margin-left:14px; }
+  nav a[aria-current] { color:var(--accent); font-weight:600; }
+  main { max-width:820px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:30px; margin:0 0 4px; }
+  .date { color:var(--muted); font-size:14px; margin:0 0 20px; }
+  .intro { font-size:17px; }
+  h2 { font-size:21px; margin:34px 0 8px; padding-top:10px; border-top:1px solid var(--line); }
+  h3 { font-size:17px; margin:24px 0 6px; }
+  a { color:var(--accent); }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin:14px 0; }
+  footer { max-width:820px; margin:0 auto; padding:0 20px 40px; color:var(--muted); font-size:14px; }
+</style>
+</head>
+<body>
+<header><div class="bar"><a class="brand" href="/">Recovery Translator</a><nav><a href="/docs">Documentation</a><a href="/support">Support</a><a href="/privacy" aria-current="page">Privacy</a><a href="/terms">Terms</a></nav></div></header>
+<main>
+<h1>Privacy Policy</h1>
+<p class="date">Last updated: October 8, 2026</p>
+<p class="intro">Recovery Translator was built by and for the recovery community, where anonymity matters. This page explains, in plain language, what happens to what is said in a meeting while Recovery Translator is running.</p>
+
+
+        <h2>The short version</h2>
+        <ul>
+            <li>No accounts, no names, no cookies, no ads, no analytics.</li>
+            <li>We do not record or save meeting audio, captions, or translations.</li>
+            <li>Meeting audio is sent to Google's Gemini API to be translated. We use Google's <strong>paid</strong> service, so Google does not use it to train or improve its products.</li>
+            <li>Google keeps what is sent and returned for up to <strong>55 days</strong>, only to detect abuse of its service, such as hate speech or harassment. If its automated systems flag something, authorized Google staff may review it.</li>
+            <li>Anything said aloud while captions are running is sent for translation, so share with that in mind.</li>
+        </ul>
+
+        <h2>What we never collect</h2>
+        <p>Recovery Translator does not ask for your name, email, phone number, or any other personal details. Listeners join with only a session code. Session leaders use an access code, which is not tied to anyone's identity.</p>
+
+        <h2>What happens to meeting audio</h2>
+        <p>While a session is running, audio from the leader's microphone (or from the Zoom meeting, through the Recovery Translator Zoom app) passes through our server straight to Google's Gemini API. Google returns the English and Spanish captions and spoken translation, and our server passes them straight on to the people in the session. Nothing is written to disk along the way, and nothing remains on our server after the session ends.</p>
+
+        <h2>How Google handles it</h2>
+        <p>Recovery Translator uses the paid tier of the Gemini API. Under Google's terms for paid services:</p>
+        <ul>
+            <li>Google does <strong>not</strong> use the audio, captions, or translations to train or improve its products.</li>
+            <li>Google processes the data as a <em>data processor</em>, under its Data Processing Addendum.</li>
+            <li>Google logs what is sent and what comes back for up to 55 days. It uses these logs only to detect and prevent violations of its Prohibited Use Policy, and for any legally required disclosures. It does not use them to train AI models, other than the systems that enforce that policy.</li>
+            <li>Google's automated systems scan for the kinds of misuse its Prohibited Use Policy lists. For example:
+                <ul>
+                    <li><strong>Hate speech or harassment:</strong> using the service to attack, threaten, or bully people.</li>
+                    <li><strong>Sexually explicit or dangerous content:</strong> using it to produce explicit material, or instructions that could cause serious harm.</li>
+                </ul>
+                These rules target misuse of the service. They are not aimed at people sharing honestly about their own experience.
+                Flagged content may be reviewed by authorized Google employees.</li>
+            <li>The data may be stored briefly or cached in any country where Google or its agents have facilities.</li>
+        </ul>
+        <p>Google does not receive anyone's name or account from us; it receives the audio itself. But a voice, or details someone shares, could still identify them.</p>
+
+        <h2>Protecting anonymity in your meeting</h2>
+        <ul>
+            <li><strong>Leaders:</strong> please let the group know at the start that the meeting is being translated live by an AI service, and briefly explain what that means.</li>
+            <li><strong>Members:</strong> as you would in any open meeting, consider using first names only and leaving out details that could identify you or others, such as last names, workplaces, or places.</li>
+            <li>Everything said aloud while captions are running is sent for translation. In Zoom, the leader can tap <strong>Pause</strong> to stop sending audio for part of a meeting, or end the session.</li>
+        </ul>
+
+        <h2>What our server keeps</h2>
+        <ul>
+            <li><strong>During a session:</strong> the session code, and which screens are connected to it. This is held in memory only and deleted when the session ends.</li>
+            <li><strong>Technical logs:</strong> our hosting provider keeps routine logs, such as session codes, connection and error events, and Zoom stream IDs. These logs never include audio, captions, translations, or names.</li>
+            <li><strong>Zoom app:</strong> when the Zoom app is installed, Zoom sends us an authorization token. We use it only to finish the installation, and we don't keep it.</li>
+        </ul>
+
+        <h2>What stays on your device</h2>
+        <p>Some pages remember small settings in your browser, such as caption text size and display colors. The Zoom app also remembers the leader's access code. These stay on your device. The access code is sent to us only when you start a session, to check it, and is not stored. We do not use cookies.</p>
+
+        <h2>Other services</h2>
+        <p>Like any website, our hosting provider can see the IP address of each visitor. The pages load a QR-code library from Cloudflare's cdnjs, and the Zoom app loads Zoom's own app software. When used inside Zoom, Zoom's privacy policy also applies.</p>
+
+        <h2>Changes</h2>
+        <p>If how Recovery Translator handles data changes, we will update this page and the date at the top.</p>
+
+        <h2>Contact</h2>
+        <p>Questions or concerns about privacy? Email <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
+<h2>Zoom app: removing it and your data</h2>
+<p>Recovery Translator stores no Zoom user data, so there is nothing to delete when the app is removed. Removing it stops all access immediately. See <a href="/docs#remove">how to remove the app</a>.</p>
+</main>
+<footer>Questions? Email <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</footer>
+</body>
+</html>

@@ -574,6 +574,10 @@ const STATIC_FILES = {
     '/transcript.html': ['transcript.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
     '/zoom-app': ['zoom-app.html', 'text/html; charset=UTF-8', ZOOM_APP_HEADERS],
     '/zoom-app.html': ['zoom-app.html', 'text/html; charset=UTF-8', ZOOM_APP_HEADERS],
+    '/privacy': ['privacy.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
+    '/terms': ['terms.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
+    '/support': ['support.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
+    '/docs': ['docs.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
     '/captions.js': ['captions.js', 'application/javascript; charset=UTF-8'],
     '/logo.png': ['recoveryTrans.png', 'image/png']
 };
@@ -645,7 +649,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Panel's "Start captions": claim Zoom audio for this session (now, or
+    // Panel's "Start captions": claim Zoom audio for this session (now, or
     // as soon as the stream starts).
     else if (req.method === 'POST' && pathname === '/zoom/connect') {
         readJson(req, (body) => {
@@ -654,7 +658,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Panel's "Stop captions": the stream stopping next is a pause, so the
+    // Panel's "Stop captions": the stream stopping next is a pause, so the
     // session stays open for listeners.
     else if (req.method === 'POST' && pathname === '/zoom/pause') {
         readJson(req, (body) => {
@@ -674,10 +678,10 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Zoom RTMS webhook:
-        //   endpoint.url_validation -- Zoom's challenge when the URL is saved in
-        //     the Zoom console; we echo back an HMAC-signed token.
-        //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
+    // Zoom RTMS webhook:
+    //   endpoint.url_validation -- Zoom's challenge when the URL is saved in
+    //     the Zoom console; we echo back an HMAC-signed token.
+    //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
     //     meeting's audio stream.
     else if (req.method === 'POST' && pathname === '/zoom/rtms-webhook') {
         readRawBody(req, (rawBody) => {
@@ -721,8 +725,8 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // OAuth redirect target. Zoom sends the user here (with a one-time
-        // ?code=...) after they click Allow on the app's consent screen. This URL
+    // OAuth redirect target. Zoom sends the user here (with a one-time
+    // ?code=...) after they click Allow on the app's consent screen. This URL
     // must match the redirect URI registered in the Zoom console.
     else if (req.method === 'GET' && pathname === '/zoom/oauth/callback') {
         const code = parsedUrl.searchParams.get('code');
@@ -757,7 +761,7 @@ const server = http.createServer((req, res) => {
                     res.end('<p>Zoom rejected the authorization. Please try installing the app again.</p>');
                     return;
                 }
-                // The exchange completes Zoom's 'install flow'. The server makes
+                // The exchange completes Zoom's install flow. The server makes
                 // no Zoom API calls, so the tokens are not kept -- they're
                 // discarded here and never written to disk or logs.
                 console.log('Zoom OAuth success. Scopes granted:', tokenData.scope);
@@ -798,7 +802,7 @@ wss.on('connection', (ws, req) => {
     if (role === 'leader') {
         session.leaderSocket = ws;
         const pipelineKey = 'leader-' + sessionCode;
-        // Clicking reconnect (tab resume, network blip) cancels a pending teardown,
+        // A reconnect (tab resume, network blip) cancels a pending teardown,
         // so the same pipeline keeps running.
         if (session.leaderTeardownTimer) {
             clearTimeout(session.leaderTeardownTimer);
@@ -825,7 +829,7 @@ wss.on('connection', (ws, req) => {
 
         ws.on('close', () => {
             // Only the CURRENT leader socket closing matters; a stale one
-            // replaced by a reconnecting call must not tear anything down.
+            // replaced by a reconnect must not tear anything down.
             if (session.leaderSocket !== ws || session.ended) return;
             // Give the leader a minute to come back before stopping
             // translation, so a brief drop doesn't interrupt the meeting.
