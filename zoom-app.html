@@ -66,6 +66,23 @@
             background: none; color: #4f46e5; text-decoration: underline;
         }
         .new-code strong { font-size: 18px; letter-spacing: 2px; }
+        /* Hover or tap the (i) for an explanation, so the panel stays uncluttered. */
+        .label-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+        .label-row label { margin-top: 0; }
+        .tip {
+            position: relative; display: inline-flex; align-items: center; justify-content: center;
+            width: 16px; height: 16px; border-radius: 50%; background: #e2e8f0; color: #4a5568;
+            font-size: 11px; font-weight: 700; cursor: help; outline: none;
+        }
+        .tip::after {
+            content: attr(data-tip); display: none; position: absolute; top: 22px; left: -8px; z-index: 10;
+            width: 230px; padding: 8px 10px; border-radius: 6px; background: #1a202c; color: #fff;
+            font-size: 12px; font-weight: 400; line-height: 1.45;
+        }
+        .tip:hover::after, .tip:focus::after { display: block; }
+        #link-fields:not([hidden]) { display: flex; flex-direction: column; gap: 6px; }
+        .text-link { background: none; border: none; padding: 0; color: #4f46e5; text-decoration: underline;
+            font-size: 12px; font-weight: 500; cursor: pointer; flex: 0 0 auto; }
         #captions { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
         .cap-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
         .cap-label { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #718096; }
@@ -103,11 +120,8 @@
         <input id="group-label" maxlength="80" autocomplete="off"/>
         <label for="gemini-key">Gemini API key</label>
         <input type="password" id="gemini-key" autocomplete="off" placeholder="Paste your key"/>
-        <p class="hint"><strong>Use a key from a Google project with billing turned on.</strong> With a free-tier key,
-            Google may use your meeting audio to improve its products. Create one at aistudio.google.com/apikey;
-            the documentation shows how to turn on billing.</p>
-        <p class="hint">We check the key with Google, then store it encrypted, linked to your Zoom account.
-            Removing the app from Zoom deletes it.</p>
+        <!-- The details (billing, how it's stored) live in the docs, opened in the browser -->
+        <button type="button" class="text-link" style="align-self:flex-start" onclick="openDocs('/docs#gemini-key')">How to get a key ↗</button>
         <button type="submit" class="btn-primary" id="save-settings-btn">Save key</button>
     </form>
     <div class="status ok new-code" id="new-code" style="display:none;margin-top:8px"></div>
@@ -130,27 +144,25 @@
     <div id="access-code-row" style="display:flex;flex-direction:column;gap:6px">
         <label for="access-code">Access code</label>
         <input type="password" id="access-code" autocomplete="off"/>
-        <p class="hint" id="no-key-note" style="display:none">No access code? Save your group's own Gemini key in
-            <a href="#" onclick="openSettings(); return false;">Settings</a>.</p>
     </div>
 
-
-    <label>Languages</label>
+    <div class="label-row">
+        <label>Languages</label>
+        <span class="tip" tabindex="0" aria-label="About languages"
+              data-tip="Captions appear in each checked language, using this meeting's audio. Audio also reads that language aloud for listeners. Each language is one more live translation, so check only what your meeting needs.">i</span>
+    </div>
     <div id="lang-picker"></div>
-    <p class="hint">Captions in each checked language; <strong>Audio</strong> also reads it aloud. Each language is
-        one more live translation, which adds to the Gemini cost.</p>
-
-    <p class="hint">Audio comes from this Zoom meeting.</p>
-    <button type="submit" class="btn-primary" id="create-btn">Start session</button>
+    <button type="submit" class="btn-primary" id="create-btn" style="margin-top:6px">Start session</button>
 </form>
 
 <!-- Link a session started in the browser to this meeting -->
 <form id="link-form" style="display:none" onsubmit="event.preventDefault(); linkBrowserSession();">
-    <h2>Started a session in the browser?</h2>
-    <label for="link-code">Zoom link code</label>
-    <input type="text" id="link-code" maxlength="6" autocomplete="off" oninput="this.value = this.value.toUpperCase()"/>
-    <p class="hint">The leader screen shows this code when "A Zoom meeting" is the audio source.</p>
-    <button type="submit" class="btn-primary" id="link-btn">Link to this meeting</button>
+    <button type="button" class="text-link" style="align-self:flex-start" onclick="$('link-fields').hidden = !$('link-fields').hidden">Started the session on the website?</button>
+    <div id="link-fields" hidden>
+        <label for="link-code">Zoom link code (from the leader screen)</label>
+        <input type="text" id="link-code" maxlength="6" autocomplete="off" oninput="this.value = this.value.toUpperCase()"/>
+        <button type="submit" class="btn-primary" id="link-btn">Link to this meeting</button>
+    </div>
 </form>
 
 <!-- Running session -->
@@ -166,10 +178,6 @@
         </div>
         <!-- One button per session language: which caption boxes show here -->
         <div class="row toggle" id="display-toggle"></div>
-        <details>
-            <summary>Details</summary>
-            <pre id="log"></pre>
-        </details>
     </div>
 </details>
 
@@ -224,11 +232,17 @@
         $('status').className = 'status ' + cls;
         $('status').textContent = text;
     }
+    // Diagnostics go to the browser console only, not the panel.
     function log(msg) {
-        const el = $('log');
-        if (!el) return;
-        el.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
-        el.scrollTop = el.scrollHeight;
+        console.log(`[Recovery Translator] ${msg}`);
+    }
+
+    // Opens one of our pages in the user's own browser. Zoom only lets the
+    // panel open outside links through the SDK (openUrl).
+    async function openDocs(path) {
+        const url = location.origin + path;
+        try { await sdk.openUrl({ url }); }
+        catch (err) { setStatus('pending', 'See ' + url); }
     }
 
     // Text size for both caption boxes, remembered between meetings.
@@ -243,7 +257,7 @@
 
     async function init() {
         try {
-            const cfg = await sdk.config({ capabilities: ['startRTMS', 'stopRTMS', 'sendMessageToChat'], version: '0.16' });
+            const cfg = await sdk.config({ capabilities: ['startRTMS', 'stopRTMS', 'sendMessageToChat', 'openUrl'], version: '0.16' });
             // Zoom lists any API not enabled for this app in the Marketplace settings.
             if (cfg.unsupportedApis && cfg.unsupportedApis.length) log('Not enabled for this app: ' + cfg.unsupportedApis.join(', '));
             log('Connected to Zoom. Context: ' + cfg.runningContext);
@@ -283,8 +297,7 @@
         const saved = config.configured;
         $('access-code-row').style.display = saved ? 'none' : 'flex';
         $('key-note').style.display = saved ? '' : 'none';
-        $('no-key-note').style.display = !saved && config.storeEnabled ? '' : 'none';
-        if (saved) $('key-note').textContent = `Using the saved Gemini key for ${config.group.label} (${config.group.keyHint}).`;
+        if (saved) $('key-note').textContent = `Using ${config.group.label}'s saved key (${config.group.keyHint}).`;
     }
 
     // Settings takes over the panel; Back restores whatever was showing.
@@ -301,9 +314,8 @@
         $('remove-key-btn').style.display = config.group ? '' : 'none';
         $('settings-intro').textContent = !config.storeEnabled
             ? "This server isn't set up to save keys. Use an access code instead."
-            : config.configured
-                ? `Saved key: ${config.group.keyHint}. Paste a new key to replace it.`
-                : "Save your group's Gemini API key once. After that, starting a session here needs no access code.";
+            : config.configured ? `Saved key: ${config.group.keyHint}. Paste a new key to replace it.` : '';
+        $('settings-intro').style.display = $('settings-intro').textContent ? '' : 'none';
     }
     function closeSettings() {
         $('settings-view').style.display = 'none';
@@ -322,15 +334,16 @@
             config = { storeEnabled: true, configured: true, group: data.group };
             setStatus('ok', 'Key saved.');
             $('settings-intro').textContent = `Saved key: ${data.group.keyHint}. Paste a new key to replace it.`;
+            $('settings-intro').style.display = '';
             $('remove-key-btn').style.display = '';
             // The website access code exists only now -- the server keeps a hash.
             if (data.accessCode) {
                 const box = $('new-code');
-                box.textContent = 'Website access code for your group: ';
+                box.textContent = 'Website access code: ';
                 const strong = document.createElement('strong');
                 strong.textContent = data.accessCode;
                 box.appendChild(strong);
-                box.appendChild(document.createTextNode('. Write it down now; it won\'t be shown again. Use it to start sessions on the website with your key.'));
+                box.appendChild(document.createTextNode('. Write it down; it won\'t be shown again.'));
                 box.style.display = '';
             }
         } catch (err) {
@@ -373,7 +386,7 @@
         $('link-form').style.display = '';
         $('create-btn').disabled = false;
         $('link-btn').disabled = false;
-        setStatus('pending', 'No session yet. Start one here, or link one from the browser.');
+        setStatus('pending', 'No session yet.');
         clearInterval(lookTimer);
         lookTimer = setInterval(async () => {
             const s = await fetchCurrentSession();
