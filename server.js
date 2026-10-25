@@ -552,6 +552,25 @@ function decryptZoomAppContext(header, clientSecret) {
     return JSON.parse(Buffer.concat([decipher.update(cipherText), decipher.final()]).toString('utf8'));
 }
 
+// TEMPORARY diagnostic, for building the attendee "viewer mode": logs which
+// fields Zoom's context carries -- field NAMES only. The only values logged
+// are short ones from fields named like a role or type (e.g. "host",
+// "meeting"), which identify no one. Never user or meeting IDs. Logged once
+// per distinct shape, so it doesn't fill the logs.
+const seenContextShapes = new Set();
+function logContextShape(ctx) {
+    try {
+        const names = Object.keys(ctx).sort();
+        const roleish = names
+            .filter(n => /role|typ/i.test(n) && typeof ctx[n] === 'string' && ctx[n].length <= 20)
+            .map(n => `${n}=${ctx[n]}`);
+        const shape = names.join(',') + ' | ' + roleish.join(',');
+        if (seenContextShapes.has(shape)) return;
+        seenContextShapes.add(shape);
+        console.log(`Zoom context fields: ${names.join(', ')}${roleish.length ? ` | ${roleish.join(', ')}` : ''}`);
+    } catch (e) { /* diagnostics must never break the panel */ }
+}
+
 // Returns { uid, mid } from a valid, unexpired context header, else null.
 function readZoomAppContext(req) {
     const header = req.headers['x-zoom-app-context'];
@@ -559,6 +578,7 @@ function readZoomAppContext(req) {
     if (!header || !secret) return null;
     try {
         const ctx = decryptZoomAppContext(header, secret);
+        logContextShape(ctx);
         // Zoom's timestamps may be seconds or milliseconds; accept either.
         const exp = Number(ctx.exp);
         if (exp && (exp < 1e12 ? exp * 1000 : exp) < Date.now()) return null;
