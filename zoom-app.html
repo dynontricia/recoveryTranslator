@@ -213,6 +213,7 @@
 
     // This Zoom user's saved settings (from /zoom/config).
     let config = { storeEnabled: false, configured: false, group: null };
+    let canOpenUrl = true; // false when Zoom says openUrl isn't enabled for this app
 
     // Every call to our server carries the panel token.
     async function api(path, body) {
@@ -239,10 +240,25 @@
 
     // Opens one of our pages in the user's own browser. Zoom only lets the
     // panel open outside links through the SDK (openUrl).
+    // If Zoom can't open it -- openUrl not enabled, an error, or no answer
+    // within a few seconds -- the address shows in the panel instead, so the
+    // button never silently does nothing.
     async function openDocs(path) {
         const url = location.origin + path;
-        try { await sdk.openUrl({ url }); }
-        catch (err) { setStatus('pending', 'See ' + url); }
+        const showAddress = (why) => {
+            log('openUrl: ' + why);
+            setStatus('pending', 'Open this in your browser: ' + url);
+        };
+        if (!canOpenUrl) { showAddress('not enabled for this app'); return; }
+        try {
+            await Promise.race([
+                sdk.openUrl({ url }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('no answer from Zoom')), 4000))
+            ]);
+            setStatus('ok', 'Opened in your browser.');
+        } catch (err) {
+            showAddress(err.message || String(err));
+        }
     }
 
     // Text size for both caption boxes, remembered between meetings.
@@ -260,6 +276,7 @@
             const cfg = await sdk.config({ capabilities: ['startRTMS', 'stopRTMS', 'sendMessageToChat', 'openUrl'], version: '0.16' });
             // Zoom lists any API not enabled for this app in the Marketplace settings.
             if (cfg.unsupportedApis && cfg.unsupportedApis.length) log('Not enabled for this app: ' + cfg.unsupportedApis.join(', '));
+            canOpenUrl = !(cfg.unsupportedApis || []).includes('openUrl');
             log('Connected to Zoom. Context: ' + cfg.runningContext);
         } catch (err) {
             log('sdk.config() failed: ' + err.message);
