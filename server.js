@@ -664,15 +664,20 @@ function noteFailure(req) {
 // Checks a Gemini key with Google before saving it, so a typo shows up now,
 // not as silence in the middle of a meeting. The key goes in a header, not
 // the URL, so it can't end up in anyone's request logs.
-async function validateGeminiKey(key) {
-    if (typeof key !== 'string' || !/^[A-Za-z0-9_\-]{20,200}$/.test(key.trim())) {
-        return { ok: false, error: "That doesn't look like a Gemini API key." };
+//
+// We don't guess at Google's key format -- it has changed before. We only
+// remove whitespace a paste can carry (spaces, line breaks), then ask Google.
+// Returns { ok, key } with the cleaned key, or { ok: false, error }.
+async function validateGeminiKey(raw) {
+    const key = typeof raw === 'string' ? raw.replace(/\s+/g, '') : '';
+    if (key.length < 10 || key.length > 512) {
+        return { ok: false, error: "That doesn't look like a Gemini API key. Copy it again from Google AI Studio." };
     }
     try {
         const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', {
-            headers: { 'x-goog-api-key': key.trim() }
+            headers: { 'x-goog-api-key': key }
         });
-        if (r.ok) return { ok: true };
+        if (r.ok) return { ok: true, key };
         if ([400, 401, 403].includes(r.status)) return { ok: false, error: 'Google rejected that key. Check it and try again.' };
         return { ok: false, error: `Google couldn't check the key right now (${r.status}). Try again in a minute.` };
     } catch (err) {
@@ -806,8 +811,8 @@ const server = http.createServer((req, res) => {
         serveFile(req, res, path.join(__dirname, file), contentType, headers);
     }
 
-    // The Zoom panel. Zoom's signed context header says who and which meeting;
-    // the page gets a panel token for it. Opened outside a Zoom meeting, the
+        // The Zoom panel. Zoom's signed context header says who and which meeting;
+        // the page gets a panel token for it. Opened outside a Zoom meeting, the
     // token is empty and the panel says to open it from inside one.
     else if ((req.method === 'GET' || req.method === 'HEAD') && (pathname === '/zoom-app' || pathname === '/zoom-app.html')) {
         const ctx = readZoomAppContext(req);
@@ -866,7 +871,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // The Zoom panel's Settings screen: this Zoom user's saved settings.
+        // The Zoom panel's Settings screen: this Zoom user's saved settings.
     // Never returns the key itself -- only its last four characters.
     else if (req.method === 'GET' && pathname === '/zoom/config') {
         const panel = readPanelToken(req);
@@ -879,7 +884,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Saves (or replaces) this Zoom user's Gemini key, after Google confirms
+        // Saves (or replaces) this Zoom user's Gemini key, after Google confirms
     // it works. The first save also returns a website access code -- once.
     else if (req.method === 'POST' && pathname === '/zoom/config') {
         readJson(req, async (body) => {
@@ -888,7 +893,7 @@ const server = http.createServer((req, res) => {
             if (!store.enabled()) { sendJson(res, 503, { error: "This server isn't set up to save keys." }); return; }
             const check = await validateGeminiKey(body.geminiKey);
             if (!check.ok) { sendJson(res, 400, { error: check.error }); return; }
-            const result = store.saveZoomGroup(panel.uid, { label: body.label, geminiKey: body.geminiKey.trim() });
+            const result = store.saveZoomGroup(panel.uid, { label: body.label, geminiKey: check.key });
             console.log(`Settings saved from the Zoom app (group ${result.group.id})`);
             sendJson(res, 200, { configured: true, group: result.group, accessCode: result.accessCode });
         });
@@ -915,11 +920,13 @@ const server = http.createServer((req, res) => {
         } else if (req.method === 'POST' && parts.length === 2) {
             readJson(req, async (body) => {
                 if (!store.enabled()) { sendJson(res, 503, { error: 'Set KEY_ENCRYPTION_KEY first.' }); return; }
+                let geminiKey = null;
                 if (body.geminiKey) {
                     const check = await validateGeminiKey(body.geminiKey);
                     if (!check.ok) { sendJson(res, 400, { error: check.error }); return; }
+                    geminiKey = check.key;
                 }
-                const result = store.createCodeGroup({ label: body.label, geminiKey: body.geminiKey ? body.geminiKey.trim() : null });
+                const result = store.createCodeGroup({ label: body.label, geminiKey });
                 console.log(`Admin: created group ${result.group.id}`);
                 sendJson(res, 200, result);
             });
@@ -941,7 +948,7 @@ const server = http.createServer((req, res) => {
         sendJson(res, 200, code ? sessionSummary(code) : { sessionCode: null });
     }
 
-    // Links a session started in the browser to the meeting whose panel sent
+        // Links a session started in the browser to the meeting whose panel sent
     // the one-time link code the browser showed its leader.
     else if (req.method === 'POST' && pathname === '/zoom/link') {
         readJson(req, (body) => {
@@ -959,8 +966,8 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Public facts about a session: whether it's live, its languages (for the
-    // listener's language list and the display columns), and whether audio is
+        // Public facts about a session: whether it's live, its languages (for the
+        // listener's language list and the display columns), and whether audio is
     // flowing. Nothing here needs more than the session code.
     else if (req.method === 'GET' && (pathname === '/session/info' || pathname === '/zoom/session-status')) {
         const code = String(parsedUrl.searchParams.get('code') || '').toUpperCase();
@@ -974,7 +981,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Panel's "Start captions": claim Zoom audio for this session (now, or
+        // Panel's "Start captions": claim Zoom audio for this session (now, or
     // as soon as the stream starts).
     else if (req.method === 'POST' && pathname === '/zoom/connect') {
         readJson(req, (body) => {
@@ -985,7 +992,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Panel's "Stop captions": the stream stopping next is a pause, so the
+        // Panel's "Stop captions": the stream stopping next is a pause, so the
     // session stays open for listeners.
     else if (req.method === 'POST' && pathname === '/zoom/pause') {
         readJson(req, (body) => {
@@ -1009,13 +1016,13 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Zoom RTMS webhook:
-    //   endpoint.url_validation -- Zoom's challenge when the URL is saved in
-    //     the Zoom console; we echo back an HMAC-signed token.
-    //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
-    //     meeting's audio stream.
-    //   app_deauthorized -- someone removed the app; delete their settings.
-    //     Also accepted at /zoom/deauthorize, for Zoom's separate
+        // Zoom RTMS webhook:
+        //   endpoint.url_validation -- Zoom's challenge when the URL is saved in
+        //     the Zoom console; we echo back an HMAC-signed token.
+        //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
+        //     meeting's audio stream.
+        //   app_deauthorized -- someone removed the app; delete their settings.
+        //     Also accepted at /zoom/deauthorize, for Zoom's separate
     //     "Deauthorization Notification Endpoint" field.
     else if (req.method === 'POST' && (pathname === '/zoom/rtms-webhook' || pathname === '/zoom/deauthorize')) {
         readRawBody(req, (rawBody) => {
@@ -1069,8 +1076,8 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // OAuth redirect target. Zoom sends the user here (with a one-time
-    // ?code=...) after they click Allow on the app's consent screen. This URL
+        // OAuth redirect target. Zoom sends the user here (with a one-time
+        // ?code=...) after they click Allow on the app's consent screen. This URL
     // must match the redirect URI registered in the Zoom console.
     else if (req.method === 'GET' && pathname === '/zoom/oauth/callback') {
         const code = parsedUrl.searchParams.get('code');
