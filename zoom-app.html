@@ -233,11 +233,6 @@
         $('status').className = 'status ' + cls;
         $('status').textContent = text;
     }
-    // Diagnostics go to the browser console only, not the panel.
-    function log(msg) {
-        console.log(`[Recovery Translator] ${msg}`);
-    }
-
     // Opens one of our pages in the user's own browser. Zoom only lets the
     // panel open outside links through the SDK (openUrl).
     // If Zoom can't open it -- openUrl not enabled, an error, or no answer
@@ -245,11 +240,10 @@
     // button never silently does nothing.
     async function openDocs(path) {
         const url = location.origin + path;
-        const showAddress = (why) => {
-            log('openUrl: ' + why);
+        const showAddress = () => {
             setStatus('pending', 'Open this in your browser: ' + url);
         };
-        if (!canOpenUrl) { showAddress('not enabled for this app'); return; }
+        if (!canOpenUrl) { showAddress(); return; }
         try {
             await Promise.race([
                 sdk.openUrl({ url }),
@@ -257,7 +251,7 @@
             ]);
             setStatus('ok', 'Opened in your browser.');
         } catch (err) {
-            showAddress(err.message || String(err));
+            showAddress();
         }
     }
 
@@ -275,16 +269,12 @@
         try {
             const cfg = await sdk.config({ capabilities: ['startRTMS', 'stopRTMS', 'sendMessageToChat', 'openUrl'], version: '0.16' });
             // Zoom lists any API not enabled for this app in the Marketplace settings.
-            if (cfg.unsupportedApis && cfg.unsupportedApis.length) log('Not enabled for this app: ' + cfg.unsupportedApis.join(', '));
             canOpenUrl = !(cfg.unsupportedApis || []).includes('openUrl');
-            log('Connected to Zoom. Context: ' + cfg.runningContext);
         } catch (err) {
-            log('sdk.config() failed: ' + err.message);
             setStatus('err', 'This page runs inside a Zoom meeting. Open it from Apps → Recovery Translator.');
             return;
         }
         if (!PANEL_TOKEN) {
-            log('No meeting context from Zoom');
             setStatus('err', 'Open Recovery Translator from Apps inside a meeting.');
             return;
         }
@@ -304,7 +294,7 @@
         try {
             const { ok, data } = await api('/zoom/config');
             if (ok) config = data;
-        } catch (err) { log('Settings lookup failed: ' + err.message); }
+        } catch (err) { /* no settings: the access code still works */ }
         renderConfig();
     }
 
@@ -387,7 +377,6 @@
             const { data } = await api('/zoom/current-session');
             return data.sessionCode ? data : null;
         } catch (err) {
-            log('Session lookup failed: ' + err.message);
             return null;
         }
     }
@@ -431,7 +420,6 @@
                 $('link-btn').disabled = false;
                 return;
             }
-            log(`Linked session ${data.sessionCode} to this meeting`);
             $('link-code').value = '';
             showSession(data);
             if (!data.audioConnected) startCaptions();
@@ -461,7 +449,6 @@
                 return;
             }
             if (accessCode) { try { localStorage.setItem('rt-access-code', accessCode); } catch (e) {} }
-            log(`Session ${data.sessionCode} created (Zoom audio: ${data.zoomAudio})`);
             showSession({ sessionCode: data.sessionCode, languages: data.languages, audioConnected: data.zoomAudio === 'connected' });
             // Starting a session from Zoom means "caption this meeting now".
             if (data.zoomAudio !== 'connected') startCaptions();
@@ -484,7 +471,6 @@
         // Start with English if the session has it, else its first language.
         shown = [sessionLanguages.includes('en') ? 'en' : sessionLanguages[0]];
         buildLanguageToggles();
-        log(`Session ${sessionCode} (${languageListText(sessionLanguages)})`);
 
         const joinUrl = `${location.origin}?join=${sessionCode}`;
         $('join-info').innerHTML = `Session <strong>${sessionCode}</strong> · listeners join at <a href="${joinUrl}" target="_blank">${joinUrl}</a>`;
@@ -503,23 +489,19 @@
         try {
             // Make sure the server is ready to connect this session to Zoom's audio.
             const { data } = await api('/zoom/connect', { sessionCode });
-            log('Connect: ' + (data.status || data.error));
             if (data.status === 'no-session') {
                 setStatus('err', 'That session has ended.');
                 showForm();
                 return;
             }
             try {
-                const r = await sdk.startRTMS();
-                log('startRTMS: ' + JSON.stringify(r));
+                await sdk.startRTMS();
             } catch (err) {
                 // With RTMS auto-start on, the stream may already be running,
                 // and the server has already claimed it. Not fatal.
-                log('startRTMS: ' + err.message);
             }
             setStatus('pending', 'Connecting to Zoom audio…');
         } catch (err) {
-            log('Start failed: ' + err.message);
             setStatus('err', 'Could not start captions: ' + err.message);
             $('start-btn').disabled = false;
         }
@@ -536,11 +518,9 @@
         btn.disabled = true;
         try {
             await sdk.sendMessageToChat({ message });
-            log('Posted join link to chat');
             btn.textContent = 'Posted to chat ✓';
             setTimeout(() => { btn.textContent = 'Post join link to meeting chat'; btn.disabled = false; }, 4000);
         } catch (err) {
-            log('Post to chat failed: ' + err.message);
             setStatus('err', 'Could not post to chat. Check that sendMessageToChat is enabled for the app, and that meeting chat is on.');
             btn.disabled = false;
         }
@@ -550,25 +530,17 @@
         // Tell the server this is a pause, so the session stays open.
         try {
             await api('/zoom/pause', { sessionCode });
-        } catch (err) {
-            log('Pause failed: ' + err.message);
-        }
+        } catch (err) { /* stop the stream anyway */ }
         try {
-            const r = await sdk.stopRTMS();
-            log('stopRTMS: ' + JSON.stringify(r));
-        } catch (err) {
-            log('stopRTMS failed: ' + err.message);
-        }
+            await sdk.stopRTMS();
+        } catch (err) { /* already stopped */ }
     }
 
     async function endSessionFromZoom() {
         if (!sessionCode || !confirm(`End session ${sessionCode} for everyone?`)) return;
         try {
             await api('/zoom/end-session', { sessionCode });
-            log(`Session ${sessionCode} ended`);
-        } catch (err) {
-            log('End failed: ' + err.message);
-        }
+        } catch (err) { /* the panel resets either way */ }
         try { await sdk.stopRTMS(); } catch (e) { /* may already be stopped */ }
         showForm();
     }
