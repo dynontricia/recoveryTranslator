@@ -61,6 +61,11 @@
         }
         .banner button { flex: 0 0 auto; padding: 6px 12px; font-size: 13px; }
         .join { font-size: 12px; color: #4a5568; word-break: break-all; }
+        .top .settings-link {
+            flex: 0 0 auto; padding: 4px 8px; font-size: 12px; font-weight: 600;
+            background: none; color: #4f46e5; text-decoration: underline;
+        }
+        .new-code strong { font-size: 18px; letter-spacing: 2px; }
         #captions { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
         .cap-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
         .cap-label { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #718096; }
@@ -69,7 +74,12 @@
             border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 10px 12px;
             font-size: 17px; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word;
         }
-        #cap-es-wrap .cap-box { background: #e6fffa; border-color: #b2f5ea; }
+        .cap-wrap:nth-child(odd) .cap-box { background: #e6fffa; border-color: #b2f5ea; }
+        .lang-picker { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; border-radius: 8px; }
+        .lang-picker th { text-align: left; font-weight: 600; color: #4a5568; padding: 4px 6px; border-bottom: 1px solid #e2e8f0; }
+        .lang-picker th:not(:first-child), .lang-picker td:not(:first-child) { text-align: center; width: 64px; }
+        .lang-picker td { padding: 5px 6px; border-bottom: 1px solid #f0f4f8; }
+        .lang-picker input { width: 16px; height: 16px; padding: 0; }
         details { font-size: 11px; color: #718096; }
         pre {
             margin-top: 6px; background: #1a202c; color: #68d391; font-size: 11px; padding: 8px;
@@ -81,7 +91,31 @@
 <div class="top">
     <h1>Recovery Translator</h1>
     <div class="status pending" id="status">Loading…</div>
+    <button class="settings-link" id="settings-btn" onclick="openSettings()" style="display:none">Settings</button>
 </div>
+
+<!-- Settings: save the group's own Gemini key -->
+<section id="settings-view" style="display:none">
+    <h2>Settings</h2>
+    <p class="hint" id="settings-intro"></p>
+    <form id="settings-form" onsubmit="event.preventDefault(); saveSettings();">
+        <label for="group-label">Group name (optional)</label>
+        <input id="group-label" maxlength="80" autocomplete="off"/>
+        <label for="gemini-key">Gemini API key</label>
+        <input type="password" id="gemini-key" autocomplete="off" placeholder="Paste your key"/>
+        <p class="hint"><strong>Use a key from a Google project with billing turned on.</strong> With a free-tier key,
+            Google may use your meeting audio to improve its products. Create one at aistudio.google.com/apikey;
+            the documentation shows how to turn on billing.</p>
+        <p class="hint">We check the key with Google, then store it encrypted, linked to your Zoom account.
+            Removing the app from Zoom deletes it.</p>
+        <button type="submit" class="btn-primary" id="save-settings-btn">Save key</button>
+    </form>
+    <div class="status ok new-code" id="new-code" style="display:none;margin-top:8px"></div>
+    <div class="row" style="margin-top:8px">
+        <button class="btn-stop" onclick="closeSettings()">Back</button>
+        <button class="btn-end" id="remove-key-btn" onclick="removeSettings()" style="display:none">Remove saved key</button>
+    </div>
+</section>
 
 <!-- A session was started in this meeting (e.g., by a co-host) while the form is open -->
 <div class="banner" id="browser-session-banner" style="display:none">
@@ -92,16 +126,19 @@
 <!-- Start a session from inside Zoom -->
 <form id="start-form" style="display:none" onsubmit="event.preventDefault(); createSessionFromZoom();">
     <h2>Start a session</h2>
-    <label for="access-code">Access code</label>
-    <input type="password" id="access-code" autocomplete="off" required/>
+    <p class="hint" id="key-note" style="display:none"></p>
+    <div id="access-code-row" style="display:flex;flex-direction:column;gap:6px">
+        <label for="access-code">Access code</label>
+        <input type="password" id="access-code" autocomplete="off"/>
+        <p class="hint" id="no-key-note" style="display:none">No access code? Save your group's own Gemini key in
+            <a href="#" onclick="openSettings(); return false;">Settings</a>.</p>
+    </div>
 
 
-    <label for="session-mode">Who should be able to listen to audio?</label>
-    <select id="session-mode">
-        <option value="audio_es">English text · Spanish text &amp; audio</option>
-        <option value="audio_en">English text &amp; audio · Spanish text</option>
-        <option value="audio_both">English text &amp; audio · Spanish text &amp; audio</option>
-    </select>
+    <label>Languages</label>
+    <div id="lang-picker"></div>
+    <p class="hint">Captions in each checked language; <strong>Audio</strong> also reads it aloud. Each language is
+        one more live translation, which adds to the Gemini cost.</p>
 
     <p class="hint">Audio comes from this Zoom meeting.</p>
     <button type="submit" class="btn-primary" id="create-btn">Start session</button>
@@ -127,10 +164,8 @@
             <button class="btn-stop" id="stop-btn" onclick="stopCaptions()" disabled>Pause</button>
             <button class="btn-end" onclick="endSessionFromZoom()">End session</button>
         </div>
-        <div class="row toggle" id="display-toggle">
-            <button id="show-en" class="on" onclick="setDisplay('english')">English</button>
-            <button id="show-both" onclick="setDisplay('both')">English + Español</button>
-        </div>
+        <!-- One button per session language: which caption boxes show here -->
+        <div class="row toggle" id="display-toggle"></div>
         <details>
             <summary>Details</summary>
             <pre id="log"></pre>
@@ -139,28 +174,25 @@
 </details>
 
 <div id="captions" style="display:none">
-    <div class="cap-wrap" id="cap-en-wrap">
-        <div class="cap-head">
-            <div class="cap-label">English</div>
-            <button class="size-btn" onclick="changeTextSize(-2)" aria-label="Smaller text">A−</button>
-            <button class="size-btn" onclick="changeTextSize(2)" aria-label="Larger text">A+</button>
-        </div>
-        <div class="cap-box" id="cap-en"></div>
+    <div class="cap-head">
+        <div class="cap-label">Captions</div>
+        <button class="size-btn" onclick="changeTextSize(-2)" aria-label="Smaller text">A−</button>
+        <button class="size-btn" onclick="changeTextSize(2)" aria-label="Larger text">A+</button>
     </div>
-    <div class="cap-wrap" id="cap-es-wrap" style="display:none">
-        <div class="cap-label">Español</div>
-        <div class="cap-box" id="cap-es"></div>
-    </div>
+    <!-- A labeled caption box per language being shown, built in subscribe() -->
+    <div id="cap-boxes" style="flex:1;min-height:0;display:flex;flex-direction:column;gap:8px"></div>
 </div>
 
 <script src="https://appssdk.zoom.us/sdk.js"></script>
 <script src="/captions.js"></script>
+<script src="/languages.js"></script>
 <script>
     // The SDK defines window.zoomSdk globally -- don't redeclare it.
     const sdk = window.zoomSdk;
     let sessionCode = null;
-    let display = 'english';
-    let enSource = null, esSource = null;
+    let sessionLanguages = ['en'];   // the session's caption languages
+    let shown = [];                  // which of them show in this panel
+    let boxes = {};                  // lang -> { wrap, box, source }
     let lookTimer = null, audioTimer = null;
     let pendingSession = null;
     // Proves to the server which meeting this panel is in (see server.js).
@@ -170,6 +202,9 @@
     try { textSize = parseInt(localStorage.getItem('rt-panel-text-size'), 10) || 17; } catch (e) {}
 
     const $ = id => document.getElementById(id);
+
+    // This Zoom user's saved settings (from /zoom/config).
+    let config = { storeEnabled: false, configured: false, group: null };
 
     // Every call to our server carries the panel token.
     async function api(path, body) {
@@ -198,7 +233,7 @@
 
     // Text size for both caption boxes, remembered between meetings.
     function applyTextSize() {
-        ['cap-en', 'cap-es'].forEach(id => { $(id).style.fontSize = textSize + 'px'; });
+        document.querySelectorAll('.cap-box').forEach(box => { box.style.fontSize = textSize + 'px'; });
     }
     function changeTextSize(delta) {
         textSize = Math.max(12, Math.min(40, textSize + delta));
@@ -223,12 +258,98 @@
             return;
         }
         applyTextSize();
+        renderLanguagePicker($('lang-picker'));
+        await loadConfig();
         // Remember the access code between meetings.
         try { $('access-code').value = localStorage.getItem('rt-access-code') || ''; } catch (e) {}
 
         const existing = await fetchCurrentSession();
         if (existing) showSession(existing);
         else showForm();
+    }
+
+    // ── Settings ──
+    async function loadConfig() {
+        try {
+            const { ok, data } = await api('/zoom/config');
+            if (ok) config = data;
+        } catch (err) { log('Settings lookup failed: ' + err.message); }
+        renderConfig();
+    }
+
+    // With a saved key, starting a session needs no access code.
+    function renderConfig() {
+        $('settings-btn').style.display = '';
+        const saved = config.configured;
+        $('access-code-row').style.display = saved ? 'none' : 'flex';
+        $('key-note').style.display = saved ? '' : 'none';
+        $('no-key-note').style.display = !saved && config.storeEnabled ? '' : 'none';
+        if (saved) $('key-note').textContent = `Using the saved Gemini key for ${config.group.label} (${config.group.keyHint}).`;
+    }
+
+    // Settings takes over the panel; Back restores whatever was showing.
+    const MAIN_VIEWS = ['browser-session-banner', 'start-form', 'link-form', 'session-view', 'captions'];
+    let hiddenViews = null;
+    function openSettings() {
+        if (!hiddenViews) hiddenViews = MAIN_VIEWS.map(id => [id, $(id).style.display]);
+        MAIN_VIEWS.forEach(id => { $(id).style.display = 'none'; });
+        $('settings-view').style.display = '';
+        $('new-code').style.display = 'none';
+        $('gemini-key').value = '';
+        $('group-label').value = config.group ? config.group.label : '';
+        $('settings-form').style.display = config.storeEnabled ? '' : 'none';
+        $('remove-key-btn').style.display = config.group ? '' : 'none';
+        $('settings-intro').textContent = !config.storeEnabled
+            ? "This server isn't set up to save keys. Use an access code instead."
+            : config.configured
+                ? `Saved key: ${config.group.keyHint}. Paste a new key to replace it.`
+                : "Save your group's Gemini API key once. After that, starting a session here needs no access code.";
+    }
+    function closeSettings() {
+        $('settings-view').style.display = 'none';
+        if (hiddenViews) hiddenViews.forEach(([id, d]) => { $(id).style.display = d; });
+        hiddenViews = null;
+        renderConfig();
+    }
+    async function saveSettings() {
+        const geminiKey = $('gemini-key').value.trim();
+        if (!geminiKey) return;
+        $('save-settings-btn').disabled = true;
+        setStatus('pending', 'Checking the key with Google…');
+        try {
+            const { ok, data } = await api('/zoom/config', { geminiKey, label: $('group-label').value.trim() });
+            if (!ok) { setStatus('err', data.error || 'Could not save the key.'); return; }
+            config = { storeEnabled: true, configured: true, group: data.group };
+            setStatus('ok', 'Key saved.');
+            $('settings-intro').textContent = `Saved key: ${data.group.keyHint}. Paste a new key to replace it.`;
+            $('remove-key-btn').style.display = '';
+            // The website access code exists only now -- the server keeps a hash.
+            if (data.accessCode) {
+                const box = $('new-code');
+                box.textContent = 'Website access code for your group: ';
+                const strong = document.createElement('strong');
+                strong.textContent = data.accessCode;
+                box.appendChild(strong);
+                box.appendChild(document.createTextNode('. Write it down now; it won\'t be shown again. Use it to start sessions on the website with your key.'));
+                box.style.display = '';
+            }
+        } catch (err) {
+            setStatus('err', 'Could not save the key: ' + err.message);
+        } finally {
+            $('gemini-key').value = '';
+            $('save-settings-btn').disabled = false;
+        }
+    }
+    async function removeSettings() {
+        if (!confirm('Remove your saved Gemini key and website access code?')) return;
+        try {
+            await api('/zoom/config/delete', {});
+            config = { storeEnabled: config.storeEnabled, configured: false, group: null };
+            setStatus('pending', 'Saved key removed.');
+            closeSettings();
+        } catch (err) {
+            setStatus('err', 'Could not remove the key: ' + err.message);
+        }
     }
 
     async function fetchCurrentSession() {
@@ -291,21 +412,27 @@
     }
 
     async function createSessionFromZoom() {
-        const accessCode = $('access-code').value.trim();
-        const mode = $('session-mode').value;
-        if (!accessCode) return;
+        const accessCode = config.configured ? '' : $('access-code').value.trim();
+        const choice = readLanguagePicker($('lang-picker'));
+        if (!choice.languages.length) { setStatus('err', 'Pick at least one caption language.'); return; }
+        if (!config.configured && !accessCode) {
+            setStatus('err', 'Enter an access code, or save your Gemini key in Settings.');
+            return;
+        }
         $('create-btn').disabled = true;
         setStatus('pending', 'Starting session…');
         try {
-            const { ok, data } = await api('/session/create', { accessCode, mode, audioSource: 'zoom' });
+            const body = { languages: choice.languages, audio: choice.audio, audioSource: 'zoom' };
+            if (accessCode) body.accessCode = accessCode;
+            const { ok, data } = await api('/session/create', body);
             if (!ok) {
                 setStatus('err', data.error || 'Could not start the session.');
                 $('create-btn').disabled = false;
                 return;
             }
-            try { localStorage.setItem('rt-access-code', accessCode); } catch (e) {}
+            if (accessCode) { try { localStorage.setItem('rt-access-code', accessCode); } catch (e) {} }
             log(`Session ${data.sessionCode} created (Zoom audio: ${data.zoomAudio})`);
-            showSession({ sessionCode: data.sessionCode, audioConnected: data.zoomAudio === 'connected' });
+            showSession({ sessionCode: data.sessionCode, languages: data.languages, audioConnected: data.zoomAudio === 'connected' });
             // Starting a session from Zoom means "caption this meeting now".
             if (data.zoomAudio !== 'connected') startCaptions();
         } catch (err) {
@@ -323,7 +450,11 @@
         pendingSession = null;
         unsubscribe();
         sessionCode = data.sessionCode;
-        log(`Session ${sessionCode}`);
+        sessionLanguages = data.languages && data.languages.length ? data.languages : ['en'];
+        // Start with English if the session has it, else its first language.
+        shown = [sessionLanguages.includes('en') ? 'en' : sessionLanguages[0]];
+        buildLanguageToggles();
+        log(`Session ${sessionCode} (${languageListText(sessionLanguages)})`);
 
         const joinUrl = `${location.origin}?join=${sessionCode}`;
         $('join-info').innerHTML = `Session <strong>${sessionCode}</strong> · listeners join at <a href="${joinUrl}" target="_blank">${joinUrl}</a>`;
@@ -369,7 +500,8 @@
     async function postLinkToChat() {
         if (!sessionCode) return;
         const joinUrl = `${location.origin}?join=${sessionCode}`;
-        const message = `Live captions and Spanish translation: ${joinUrl}\nSubtítulos y traducción al español en vivo: ${joinUrl}`;
+        // One line per session language, in that language.
+        const message = sessionLanguages.map(l => `${LANGUAGES[l].chat}: ${joinUrl}`).join('\n');
         const btn = $('chat-link-btn');
         btn.disabled = true;
         try {
@@ -440,35 +572,64 @@
         captionsWereRunning = running;
     }
 
-    function setDisplay(mode) {
-        display = mode;
-        $('show-en').classList.toggle('on', mode === 'english');
-        $('show-both').classList.toggle('on', mode === 'both');
+    // One toggle per session language. At least one stays on.
+    function buildLanguageToggles() {
+        const row = $('display-toggle');
+        row.innerHTML = '';
+        sessionLanguages.forEach(lang => {
+            const b = document.createElement('button');
+            b.textContent = LANGUAGES[lang].native;
+            b.className = shown.includes(lang) ? 'on' : '';
+            b.onclick = () => toggleLanguage(lang);
+            row.appendChild(b);
+        });
+        row.style.display = sessionLanguages.length > 1 ? '' : 'none';
+    }
+
+    function toggleLanguage(lang) {
+        if (shown.includes(lang)) {
+            if (shown.length === 1) return;
+            shown = shown.filter(l => l !== lang);
+        } else {
+            shown = sessionLanguages.filter(l => shown.includes(l) || l === lang); // keep session order
+        }
+        buildLanguageToggles();
         subscribe();
     }
 
-    // English stays connected; the toggle only adds or removes Spanish,
-    // so English already on screen is never wiped.
+    // Boxes already showing keep their stream, so captions on screen are
+    // never wiped when another language is added or removed.
     function subscribe() {
         if (!sessionCode) return;
-        if (!enSource) enSource = attach('english', 'cap-en');
-        const showEs = display === 'both';
-        $('cap-es-wrap').style.display = showEs ? '' : 'none';
-        if (showEs && !esSource) esSource = attach('spanish', 'cap-es');
-        if (!showEs && esSource) { esSource.close(); esSource = null; }
+        Object.keys(boxes).forEach(lang => {
+            if (!shown.includes(lang)) { boxes[lang].source.close(); boxes[lang].wrap.remove(); delete boxes[lang]; }
+        });
+        const container = $('cap-boxes');
+        shown.forEach(lang => {
+            if (!boxes[lang]) boxes[lang] = attach(lang);
+            container.appendChild(boxes[lang].wrap); // appendChild moves it, so this also orders them
+        });
+        applyTextSize();
     }
 
     function unsubscribe() {
-        if (enSource) { enSource.close(); enSource = null; }
-        if (esSource) { esSource.close(); esSource = null; }
+        Object.values(boxes).forEach(b => { b.source.close(); b.wrap.remove(); });
+        boxes = {};
     }
 
-    function attach(lang, boxId) {
-        const box = $(boxId);
-        box.textContent = '';
-        return attachCaptions(`/stream/${sessionCode}/${lang}`, box, {
+    function attach(lang) {
+        const wrap = document.createElement('div');
+        wrap.className = 'cap-wrap';
+        const label = document.createElement('div');
+        label.className = 'cap-label';
+        label.textContent = LANGUAGES[lang].native;
+        const box = document.createElement('div');
+        box.className = 'cap-box';
+        wrap.append(label, box);
+        const source = attachCaptions(`/stream/${sessionCode}/${lang}`, box, {
             onEnded: () => box.appendChild(document.createTextNode('\n\n[Session ended]'))
         });
+        return { wrap, box, source };
     }
 
     document.addEventListener('DOMContentLoaded', init);

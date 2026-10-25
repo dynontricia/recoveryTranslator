@@ -76,7 +76,12 @@
             letter-spacing: 0.04em; color: #718096; margin-bottom: 6px;
         }
         .caption-panel .caption-box { min-height: 30vh; max-height: 60vh; font-size: 19px; margin-bottom: 0; }
-        .caption-panel-es .caption-box { background: #e6fffa; border-color: #b2f5ea; }
+        .caption-panel:nth-child(even) .caption-box { background: #e6fffa; border-color: #b2f5ea; }
+        .lang-picker { width: 100%; border-collapse: collapse; margin-bottom: 8px; font-size: 14px; }
+        .lang-picker th { text-align: left; font-weight: 600; color: #4a5568; padding: 4px 6px; border-bottom: 1px solid #e2e8f0; }
+        .lang-picker th:not(:first-child), .lang-picker td:not(:first-child) { text-align: center; width: 76px; }
+        .lang-picker td { padding: 6px; border-bottom: 1px solid #f0f4f8; }
+        .lang-picker input { width: 18px; height: 18px; margin: 0; }
 
         .leader-live-layout { display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start; }
         .leader-left { flex: 0 0 300px; display: flex; flex-direction: column; }
@@ -161,24 +166,21 @@
         <div class="card">
             <h2>Start a session</h2>
             <div class="error" id="leader-error"></div>
-            <label>Access code</label>
+            <label for="access-code">Access code</label>
             <input type="password" id="access-code" placeholder="Enter access code"/>
 
-            <label>Who should be able to listen to audio?</label>
-            <select id="session-mode">
-                <option value="audio_es" selected>English text · Spanish text &amp; audio</option>
-                <option value="audio_en">English text &amp; audio · Spanish text</option>
-                <option value="audio_both">English text &amp; audio · Spanish text &amp; audio</option>
-            </select>
+            <label>Languages</label>
+            <div id="lang-picker"></div>
+            <p class="small" style="text-align:left;margin:0 0 16px">Everyone can read captions in each language you check, whatever language the speaker uses. <strong>Audio</strong> also reads it aloud. Each caption language is one more live translation, which adds to the Gemini cost, so check only what your meeting needs.</p>
 
-            <label>Where is the audio coming from?</label>
+            <label for="audio-source">Where is the audio coming from?</label>
             <select id="audio-source" onchange="updateAudioSourceFields()">
                 <option value="device" selected>This computer — a microphone, or system audio (BlackHole)</option>
                 <option value="zoom">A Zoom meeting — through the Recovery Translator Zoom app</option>
             </select>
 
             <div id="device-fields">
-                <label>Input device</label>
+                <label for="input-device">Input device</label>
                 <select id="input-device">
                     <option value="">Default microphone</option>
                 </select>
@@ -191,10 +193,6 @@
                 Captions begin as soon as Zoom's audio connects.
             </p>
 
-            <p class="small" style="margin-top:4px;margin-bottom:20px;text-align:left">
-                Everyone gets live English and Spanish captions, whatever language the speaker uses.
-                Listeners can also hear the languages marked "audio" read aloud.
-            </p>
             <button class="btn btn-primary" onclick="createSession()">Start session</button>
             <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
         </div>
@@ -231,14 +229,7 @@
                 </div>
 
                 <div class="leader-right">
-                    <div class="caption-panel caption-panel-en">
-                        <div class="caption-panel-label">English</div>
-                        <div class="caption-box" id="caption-box-en"></div>
-                    </div>
-                    <div class="caption-panel caption-panel-es">
-                        <div class="caption-panel-label">Español</div>
-                        <div class="caption-box" id="caption-box-es"></div>
-                    </div>
+                    <div id="leader-caption-panels" style="display:flex;flex-direction:column;gap:16px"></div>
 
                 </div>
             </div>
@@ -250,13 +241,12 @@
         <div class="card">
             <h2>Join a session</h2>
             <div class="error" id="listener-error"></div>
-            <label>Session code</label>
+            <label for="session-code-input">Session code</label>
             <input type="text" id="session-code-input" placeholder="ABC123" maxlength="6"
-                   oninput="this.value = this.value.toUpperCase()"/>
-            <label>Preferred language</label>
-            <select id="listener-language">
-                <option value="english">English</option>
-                <option value="spanish">Español</option>
+                                                           oninput="this.value = this.value.toUpperCase(); if (this.value.length === 6) loadSessionLanguages(this.value);"/>
+            <label for="listener-language">Preferred language</label>
+            <select id="listener-language" disabled>
+                <option value="">Enter the session code first</option>
             </select>
             <button class="btn btn-primary" onclick="joinSession()">Join</button>
             <button class="btn btn-secondary" onclick="show('screen-landing')">Back</button>
@@ -273,7 +263,7 @@
             <button class="btn btn-secondary" id="audio-toggle-btn" onclick="toggleAudio()" style="display:none">🔊 Listen</button>
             <p class="small" id="audio-status"></p>
             <p class="small" id="audio-debug" style="font-family:ui-monospace,monospace;color:#718096"></p>
-            <button class="link-btn" type="button" onclick="playTestSound()">No sound? Play a test sound</button>
+            <button class="link-btn" type="button" id="test-sound-btn" onclick="playTestSound()">No sound? Play a test sound</button>
 
         </div>
     </div>
@@ -293,26 +283,29 @@
     <div class="modal">
         <button class="modal-close" onclick="closeModal('modal-privacy')">✕</button>
         <h2>Privacy Policy</h2>
-        <p class="modal-date">Last updated: October 3, 2026</p>
-        <p>Recovery Translator was built by and for the recovery community, where anonymity matters. This page explains, in plain language, what happens to what is said in a meeting while Recovery Translator is running.</p>
+        <p class="modal-date">Last updated: October 25, 2026</p>
+        <p>Recovery Translator was built by and for the recovery community, where anonymity matters. This page explains, in plain language, what happens to what is said in a meeting while Recovery Translator is running, and what little we keep.</p>
 
         <h3>The short version</h3>
         <ul>
-            <li>No accounts, no names, no cookies, no ads, no analytics.</li>
+            <li>No personal accounts, no names, no cookies, no ads, no analytics.</li>
             <li>We do not record or save meeting audio, captions, or translations.</li>
-            <li>Meeting audio is sent to Google's Gemini API to be translated. We use Google's <strong>paid</strong> service, so Google does not use it to train or improve its products.</li>
+            <li>Meeting audio is sent to Google's Gemini API to be translated into the languages the leader chooses.</li>
+            <li>With our key, or a group key from a Google project with billing turned on, Google's <strong>paid</strong> terms apply: Google does not use the audio to train or improve its products.</li>
             <li>Google keeps what is sent and returned for up to <strong>55 days</strong>, only to detect abuse of its service, such as hate speech or harassment. If its automated systems flag something, authorized Google staff may review it.</li>
+            <li>If a group saves its own Gemini key, we keep that key encrypted until the group removes it or removes the Zoom app.</li>
             <li>Anything said aloud while captions are running is sent for translation, so share with that in mind.</li>
         </ul>
 
         <h3>What we never collect</h3>
-        <p>Recovery Translator does not ask for your name, email, phone number, or any other personal details. Listeners join with only a session code. Session leaders use an access code, which is not tied to anyone's identity.</p>
+        <p>Recovery Translator does not ask for anyone's name, email, phone number, or any other personal details. Listeners join with only a session code. Leaders use an access code or their group's saved key, neither of which is tied to a person's identity.</p>
 
         <h3>What happens to meeting audio</h3>
-        <p>While a session is running, audio from the leader's microphone (or from the Zoom meeting, through the Recovery Translator Zoom app) passes through our server straight to Google's Gemini API. Google returns the English and Spanish captions and spoken translation, and our server passes them straight on to the people in the session. Nothing is written to disk along the way, and nothing remains on our server after the session ends.</p>
+        <p>While a session is running, audio from the leader's microphone (or from the Zoom meeting, through the Recovery Translator Zoom app) passes through our server straight to Google's Gemini API. Google returns captions and spoken translation in the session's languages, and our server passes them straight on to the people in the session. Nothing is written to disk along the way, and nothing remains on our server after the session ends.</p>
 
         <h3>How Google handles it</h3>
-        <p>Recovery Translator uses the paid tier of the Gemini API. Under Google's terms for paid services:</p>
+        <p>Every session uses one Gemini API key: ours, or one a group has saved. Which Google terms apply depends on that key.</p>
+        <p><strong>Paid tier</strong> (our key, and any group key from a Google project with billing turned on):</p>
         <ul>
             <li>Google does <strong>not</strong> use the audio, captions, or translations to train or improve its products.</li>
             <li>Google processes the data as a <em>data processor</em>, under its Data Processing Addendum.</li>
@@ -326,6 +319,7 @@
                 Flagged content may be reviewed by authorized Google employees.</li>
             <li>The data may be stored briefly or cached in any country where Google or its agents have facilities.</li>
         </ul>
+        <p><strong>Free tier</strong> (a group key from a project without billing): under Google's terms for unpaid use, Google may use what is sent to improve its products, and people at Google may read it. <strong>Groups should only save a key from a project with billing turned on.</strong> The <a href="/docs#gemini-key">documentation</a> shows how. We can't see which tier a group's key is on.</p>
         <p>Google does not receive anyone's name or account from us; it receives the audio itself. But a voice, or details someone shares, could still identify them.</p>
 
         <h3>Protecting anonymity in your meeting</h3>
@@ -337,22 +331,23 @@
 
         <h3>What our server keeps</h3>
         <ul>
-            <li><strong>During a session:</strong> the session code, and which screens are connected to it. This is held in memory only and deleted when the session ends.</li>
-            <li><strong>Technical logs:</strong> our hosting provider keeps routine logs, such as session codes, connection and error events, and Zoom stream IDs. These logs never include audio, captions, translations, or names.</li>
-            <li><strong>Zoom app:</strong> when the Zoom app is installed, Zoom sends us an authorization token. We use it only to finish the installation, and we don't keep it.</li>
+            <li><strong>During a session:</strong> the session code, its languages, which screens are connected, and the Gemini key it uses. This is held in memory only and deleted when the session ends.</li>
+            <li><strong>Saved group settings:</strong> when a group saves its own Gemini key in the Zoom app, or we set up an access code for a group, we keep a record with the group name it chose, the key encrypted (and its last four characters, so the group can recognize it), the access code as a one-way hash, a one-way hash of the Zoom user ID that saved it, and when it was created. We never store the access code itself, the key in readable form, or the Zoom user ID itself. The record is deleted when the group taps <strong>Remove saved key</strong>, removes the Zoom app, or asks us to delete it.</li>
+            <li><strong>Technical logs:</strong> our hosting provider keeps routine logs, such as session codes, connection and error events, Zoom stream IDs, and a short one-way hash of Zoom meeting IDs. These logs never include audio, captions, translations, keys, or names.</li>
+            <li><strong>Zoom app installation:</strong> when the Zoom app is installed, Zoom sends us an authorization token. We use it only to finish the installation, and we don't keep it.</li>
         </ul>
 
         <h3>What stays on your device</h3>
-        <p>Some pages remember small settings in your browser, such as caption text size and display colors. The Zoom app also remembers the leader's access code. These stay on your device. The access code is sent to us only when you start a session, to check it, and is not stored. We do not use cookies.</p>
+        <p>Some pages remember small settings in your browser, such as caption text size, display colors, and the leader's language choices. The Zoom app also remembers the leader's access code. These stay on your device. The access code is sent to us only when you start a session, to check it. We do not use cookies.</p>
 
         <h3>Other services</h3>
-        <p>Like any website, our hosting provider can see the IP address of each visitor. The pages load a QR-code library from Cloudflare's cdnjs, and the Zoom app loads Zoom's own app software. When used inside Zoom, Zoom's privacy policy also applies.</p>
+        <p>Like any website, our hosting provider can see the IP address of each visitor; we use it only briefly in memory to slow down repeated wrong access codes. The pages load a QR-code library from Cloudflare's cdnjs, and the Zoom app loads Zoom's own app software. When used inside Zoom, Zoom's privacy policy also applies.</p>
 
         <h3>Changes</h3>
         <p>If how Recovery Translator handles data changes, we will update this page and the date at the top.</p>
 
         <h3>Contact</h3>
-        <p>Questions or concerns about privacy? Email <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
+        <p>Questions or concerns about privacy, or a request to delete your group's saved settings? Email <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
     </div>
 </div>
 
@@ -364,17 +359,17 @@
         <h3>Session Leaders</h3>
         <ol>
             <li>Tap <strong>I am a session leader</strong> and enter your access code.</li>
-            <li>Choose who can listen to audio: <strong>Spanish</strong>, <strong>English</strong>, or <strong>both</strong>. Everyone always gets English and Spanish captions.</li>
+            <li>Under <strong>Languages</strong>, check the caption languages your meeting needs: English, Spanish, Polish, or French. Check <strong>Audio</strong> for any language listeners should also hear read aloud. Each language adds to the translation cost, so pick only what you need.</li>
             <li>Choose where the audio comes from — <strong>this computer</strong> (a microphone, or system audio through BlackHole) or <strong>a Zoom meeting</strong> — and tap <strong>Start session.</strong></li>
-            <li>For a Zoom meeting, open <strong>Apps → Recovery Translator</strong> in the meeting and tap <strong>Start captions</strong>. You can also start the session from the Zoom app directly and post the join link to the meeting chat.</li>
+            <li>For a Zoom meeting, the leader screen shows a <strong>Zoom link code</strong>. In the meeting, open <strong>Apps → Recovery Translator</strong>, enter it under <strong>Started a session in the browser?</strong>, and captions start. (You can also start the whole session from the Zoom app.)</li>
             <li>Share the QR code or session code. Optionally open the <strong>big display screen</strong> for a room projector, or the <strong>captions-only pop-out window</strong> for a simpler view.</li>
-            <li>Speak normally, in English or Spanish — both caption boxes update live.</li>
+            <li>Speak normally, in any language — every caption box updates live.</li>
             <li>Tap <strong>End session</strong> when the meeting is over. Sessions from a Zoom meeting also end on their own when the meeting does.</li>
         </ol>
         <h3>Listeners</h3>
         <ol>
-            <li>Scan the QR code or tap <strong>I am a listener</strong>, enter the session code, choose your language, and tap <strong>Join.</strong></li>
-            <li>Captions appear automatically. If the session offers audio in your language, tap <strong>🔊 Listen in English</strong> or <strong>🔊 Escuchar en español</strong> to hear it.</li>
+            <li>Scan the QR code or tap <strong>I am a listener</strong>, enter the session code, choose your language from the ones the session offers, and tap <strong>Join.</strong></li>
+            <li>Captions appear automatically. Languages marked 🔊 can also be heard: tap the <strong>🔊</strong> button to listen.</li>
             <li>If you switch apps or lock your phone briefly, reopening the page should reconnect you automatically.</li>
         </ol>
     </div>
@@ -387,15 +382,16 @@
         <h2>About Recovery Translator</h2>
         <p>Recovery Translator provides real-time spoken language interpretation and live captioning for recovery meetings, area committees, and service assemblies.</p>
         <h3>How It Works</h3>
-        <p>The leader opens a session and shares a QR code. Whatever language someone speaks, the room gets live English and Spanish captions side by side. Depending on the session, listeners can also hear a live spoken translation in Spanish, English, or both.</p>
+        <p>The leader opens a session, picks its languages (English, Spanish, Polish, or French), and shares a QR code. Whatever language someone speaks, listeners read live captions in the language they choose, and can hear a live spoken translation in the languages the leader turned audio on for.</p>
         <h3>Getting Access</h3>
-        <p>Leaders need an access code. Listeners only need the session code. To request an access code, contact <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
+        <p>Leaders need an access code, or their group's own Gemini key saved in the Zoom app's Settings. Listeners only need the session code. To request an access code, contact <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
         <h3>Built for Recovery</h3>
         <p>Built by and for the recovery community, with anonymity and accessibility in mind. Free to use and open source.</p>
     </div>
 </div>
 
 <script src="/captions.js"></script>
+<script src="/languages.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
     // ── Architecture ─────────────────────────────────────
@@ -414,7 +410,8 @@
 
     // Leader: audio capture + the leader's own caption subscriptions
     let micStream = null, captureCtx = null, leaderLive = false;
-    let leaderEnSource = null, leaderEsSource = null;
+    let leaderSources = [];           // one caption stream per session language
+    let sessionLanguages = ['en'];    // the leader's or joined session's languages
 
     // Listener: translated-audio playback
     let listenerId = null, listenerEnded = false;
@@ -497,18 +494,20 @@
         // by the time the awaits below finish, that gesture has expired.
         if (!captureCtx) captureCtx = new AudioCtx();
         const accessCode = document.getElementById('access-code').value.trim();
-        const mode = document.getElementById('session-mode').value;
+        const choice = readLanguagePicker(document.getElementById('lang-picker'));
+        if (!choice.languages.length) { showError('leader-error', 'Pick at least one caption language.'); return; }
         const audioSource = document.getElementById('audio-source').value;
         if (!accessCode) { showError('leader-error', 'Please enter the access code.'); return; }
         try {
             const res = await fetch('/session/create', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ accessCode, mode, audioSource })
+                body: JSON.stringify({ accessCode, languages: choice.languages, audio: choice.audio, audioSource })
             });
             const data = await res.json();
             if (!res.ok) { showError('leader-error', data.error || 'Failed to create session.'); return; }
             sessionCode = data.sessionCode;
             leaderToken = data.leaderToken;
+            sessionLanguages = data.languages || choice.languages;
             sessionAudioSource = audioSource;
             await startLeaderSession(sessionCode, data.linkCode);
         } catch (err) { showError('leader-error', 'Could not start the session: ' + err.message); }
@@ -521,8 +520,6 @@
         document.getElementById('display-url').textContent = url;
         document.getElementById('qr-container').innerHTML = '';
         new QRCode(document.getElementById('qr-container'), { text: url, width: 180, height: 180 });
-        document.getElementById('caption-box-en').textContent = '';
-        document.getElementById('caption-box-es').textContent = '';
 
         leaderLive = true;
         subscribeLeaderCaptions(code);
@@ -569,15 +566,21 @@
     // The leader's boxes show exactly what the server broadcasts -- the same
     // feed listeners and the display page get. No separate leader-only path.
     function subscribeLeaderCaptions(code) {
-        if (leaderEnSource) leaderEnSource.close();
-        if (leaderEsSource) leaderEsSource.close();
-        const attach = (lang, boxId) => {
-            const box = document.getElementById(boxId);
-            box.textContent = '';
+        leaderSources.forEach(src => src.close());
+        const container = document.getElementById('leader-caption-panels');
+        container.innerHTML = '';
+        leaderSources = sessionLanguages.map(lang => {
+            const panel = document.createElement('div');
+            panel.className = 'caption-panel';
+            const label = document.createElement('div');
+            label.className = 'caption-panel-label';
+            label.textContent = LANGUAGES[lang].native;
+            const box = document.createElement('div');
+            box.className = 'caption-box';
+            panel.append(label, box);
+            container.appendChild(panel);
             return attachCaptions(`/stream/${code}/${lang}`, box);
-        };
-        leaderEnSource = attach('english', 'caption-box-en');
-        leaderEsSource = attach('spanish', 'caption-box-es');
+        });
     }
 
     function openLeaderSignaling(code) {
@@ -656,17 +659,43 @@
         if (signalingWs) { signalingWs.onclose = null; signalingWs.close(); signalingWs = null; }
         if (captureCtx) { captureCtx.close(); captureCtx = null; }
         if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
-        if (leaderEnSource) { leaderEnSource.close(); leaderEnSource = null; }
-        if (leaderEsSource) { leaderEsSource.close(); leaderEsSource = null; }
+        leaderSources.forEach(src => src.close());
+        leaderSources = [];
         document.getElementById('leader-level').style.width = '0';
     }
 
     // ── LISTENER ─────────────────────────────────────────
-    function joinSession() {
+    // Fills the language list with the languages this session offers.
+    async function loadSessionLanguages(code) {
+        const select = document.getElementById('listener-language');
+        try {
+            const res = await fetch(`/session/info?code=${encodeURIComponent(code)}`);
+            const info = await res.json();
+            if (!info.exists) {
+                select.innerHTML = '<option value="">No live session with that code</option>';
+                select.disabled = true;
+                return false;
+            }
+            const preferred = (navigator.language || 'en').slice(0, 2);
+            select.innerHTML = info.languages.map(l =>
+                `<option value="${l}"${l === preferred ? ' selected' : ''}>${LANGUAGES[l].native}${info.audio.includes(l) ? ' 🔊' : ''}</option>`).join('');
+            select.disabled = false;
+            hideError('listener-error');
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async function joinSession() {
         hideError('listener-error');
         const code = document.getElementById('session-code-input').value.trim().toUpperCase();
-        listenerLanguage = document.getElementById('listener-language').value;
         if (!code || code.length !== 6) { showError('listener-error', 'Please enter a valid 6-character session code.'); return; }
+        if (document.getElementById('listener-language').disabled && !(await loadSessionLanguages(code))) {
+            showError('listener-error', 'No live session with that code. Check the code with your session leader.');
+            return;
+        }
+        listenerLanguage = document.getElementById('listener-language').value;
         sessionCode = code;
         startListenerSession(code, listenerLanguage);
     }
@@ -680,14 +709,16 @@
         if (eventSource) eventSource.close();
         eventSource = attachCaptions(`/stream/${code}/${language}`, box, {
             onEnded: endListenerSession,
-            onError: () => { document.getElementById('listener-status').textContent = 'Reconnecting...'; },
-            onOpen: () => { document.getElementById('listener-status').textContent = 'Connected'; }
+            onError: () => { document.getElementById('listener-status').textContent = LANGUAGES[language].reconnecting; },
+            onOpen: () => { document.getElementById('listener-status').textContent = LANGUAGES[language].connected; }
         });
 
         // Shown once the server says this session has audio in this language.
         const btn = document.getElementById('audio-toggle-btn');
         btn.style.display = 'none';
         btn.textContent = audioButtonLabel();
+        document.getElementById('test-sound-btn').textContent = LANGUAGES[language].testSound;
+        document.documentElement.lang = language;
         openListenerSignaling(code, language);
         show('screen-listener-live');
     }
@@ -700,8 +731,8 @@
         const b = document.getElementById('caption-box');
         b.style.display = 'flex'; b.style.alignItems = 'center'; b.style.justifyContent = 'center';
         b.style.color = '#718096'; b.style.fontSize = '18px';
-        b.innerText = 'This session has ended. Thank you!';
-        document.getElementById('listener-status').textContent = 'Session ended';
+        b.innerText = LANGUAGES[listenerLanguage].ended;
+        document.getElementById('listener-status').textContent = '—';
         document.getElementById('audio-toggle-btn').style.display = 'none';
     }
 
@@ -751,14 +782,12 @@
         if (signalingWs && signalingWs.readyState === WebSocket.OPEN) {
             signalingWs.send(JSON.stringify({ type: 'request_audio' }));
         }
-        btn.textContent = listenerLanguage === 'spanish' ? '🔇 Detener audio' : '🔇 Stop audio';
-        statusEl.textContent = listenerLanguage === 'spanish'
-            ? 'Escuchando — el audio empieza con la próxima frase.'
-            : 'Listening — audio starts with the next sentence.';
+        btn.textContent = LANGUAGES[listenerLanguage].stop;
+        statusEl.textContent = LANGUAGES[listenerLanguage].listening;
     }
 
     function audioButtonLabel() {
-        return listenerLanguage === 'spanish' ? '🔊 Escuchar en español' : '🔊 Listen in English';
+        return LANGUAGES[listenerLanguage].listen;
     }
 
     function stopAudioPlayback() {
@@ -835,8 +864,11 @@
     // ── Startup: fresh visits land on the main page ───────
     window.addEventListener('load', () => {
         const urlParams = new URLSearchParams(location.search);
+        renderLanguagePicker(document.getElementById('lang-picker'));
         if (urlParams.has('join')) {
-            document.getElementById('session-code-input').value = urlParams.get('join');
+            const code = urlParams.get('join').toUpperCase();
+            document.getElementById('session-code-input').value = code;
+            loadSessionLanguages(code);
             show('screen-listener-onboard');
         }
     });

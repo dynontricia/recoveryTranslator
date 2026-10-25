@@ -29,27 +29,30 @@
 <header><div class="bar"><a class="brand" href="/">Recovery Translator</a><nav><a href="/docs">Documentation</a><a href="/support">Support</a><a href="/privacy" aria-current="page">Privacy</a><a href="/terms">Terms</a></nav></div></header>
 <main>
 <h1>Privacy Policy</h1>
-<p class="date">Last updated: October 8, 2026</p>
-<p class="intro">Recovery Translator was built by and for the recovery community, where anonymity matters. This page explains, in plain language, what happens to what is said in a meeting while Recovery Translator is running.</p>
+<p class="date">Last updated: October 25, 2026</p>
+<p class="intro">Recovery Translator was built by and for the recovery community, where anonymity matters. This page explains, in plain language, what happens to what is said in a meeting while Recovery Translator is running, and what little we keep.</p>
 
 
         <h2>The short version</h2>
         <ul>
-            <li>No accounts, no names, no cookies, no ads, no analytics.</li>
+            <li>No personal accounts, no names, no cookies, no ads, no analytics.</li>
             <li>We do not record or save meeting audio, captions, or translations.</li>
-            <li>Meeting audio is sent to Google's Gemini API to be translated. We use Google's <strong>paid</strong> service, so Google does not use it to train or improve its products.</li>
+            <li>Meeting audio is sent to Google's Gemini API to be translated into the languages the leader chooses.</li>
+            <li>With our key, or a group key from a Google project with billing turned on, Google's <strong>paid</strong> terms apply: Google does not use the audio to train or improve its products.</li>
             <li>Google keeps what is sent and returned for up to <strong>55 days</strong>, only to detect abuse of its service, such as hate speech or harassment. If its automated systems flag something, authorized Google staff may review it.</li>
+            <li>If a group saves its own Gemini key, we keep that key encrypted until the group removes it or removes the Zoom app.</li>
             <li>Anything said aloud while captions are running is sent for translation, so share with that in mind.</li>
         </ul>
 
         <h2>What we never collect</h2>
-        <p>Recovery Translator does not ask for your name, email, phone number, or any other personal details. Listeners join with only a session code. Session leaders use an access code, which is not tied to anyone's identity.</p>
+        <p>Recovery Translator does not ask for anyone's name, email, phone number, or any other personal details. Listeners join with only a session code. Leaders use an access code or their group's saved key, neither of which is tied to a person's identity.</p>
 
         <h2>What happens to meeting audio</h2>
-        <p>While a session is running, audio from the leader's microphone (or from the Zoom meeting, through the Recovery Translator Zoom app) passes through our server straight to Google's Gemini API. Google returns the English and Spanish captions and spoken translation, and our server passes them straight on to the people in the session. Nothing is written to disk along the way, and nothing remains on our server after the session ends.</p>
+        <p>While a session is running, audio from the leader's microphone (or from the Zoom meeting, through the Recovery Translator Zoom app) passes through our server straight to Google's Gemini API. Google returns captions and spoken translation in the session's languages, and our server passes them straight on to the people in the session. Nothing is written to disk along the way, and nothing remains on our server after the session ends.</p>
 
         <h2>How Google handles it</h2>
-        <p>Recovery Translator uses the paid tier of the Gemini API. Under Google's terms for paid services:</p>
+        <p>Every session uses one Gemini API key: ours, or one a group has saved. Which Google terms apply depends on that key.</p>
+        <p><strong>Paid tier</strong> (our key, and any group key from a Google project with billing turned on):</p>
         <ul>
             <li>Google does <strong>not</strong> use the audio, captions, or translations to train or improve its products.</li>
             <li>Google processes the data as a <em>data processor</em>, under its Data Processing Addendum.</li>
@@ -63,6 +66,7 @@
                 Flagged content may be reviewed by authorized Google employees.</li>
             <li>The data may be stored briefly or cached in any country where Google or its agents have facilities.</li>
         </ul>
+        <p><strong>Free tier</strong> (a group key from a project without billing): under Google's terms for unpaid use, Google may use what is sent to improve its products, and people at Google may read it. <strong>Groups should only save a key from a project with billing turned on.</strong> The <a href="/docs#gemini-key">documentation</a> shows how. We can't see which tier a group's key is on.</p>
         <p>Google does not receive anyone's name or account from us; it receives the audio itself. But a voice, or details someone shares, could still identify them.</p>
 
         <h2>Protecting anonymity in your meeting</h2>
@@ -74,24 +78,25 @@
 
         <h2>What our server keeps</h2>
         <ul>
-            <li><strong>During a session:</strong> the session code, and which screens are connected to it. This is held in memory only and deleted when the session ends.</li>
-            <li><strong>Technical logs:</strong> our hosting provider keeps routine logs, such as session codes, connection and error events, and Zoom stream IDs. These logs never include audio, captions, translations, or names.</li>
-            <li><strong>Zoom app:</strong> when the Zoom app is installed, Zoom sends us an authorization token. We use it only to finish the installation, and we don't keep it.</li>
+            <li><strong>During a session:</strong> the session code, its languages, which screens are connected, and the Gemini key it uses. This is held in memory only and deleted when the session ends.</li>
+            <li><strong>Saved group settings:</strong> when a group saves its own Gemini key in the Zoom app, or we set up an access code for a group, we keep a record with the group name it chose, the key encrypted (and its last four characters, so the group can recognize it), the access code as a one-way hash, a one-way hash of the Zoom user ID that saved it, and when it was created. We never store the access code itself, the key in readable form, or the Zoom user ID itself. The record is deleted when the group taps <strong>Remove saved key</strong>, removes the Zoom app, or asks us to delete it.</li>
+            <li><strong>Technical logs:</strong> our hosting provider keeps routine logs, such as session codes, connection and error events, Zoom stream IDs, and a short one-way hash of Zoom meeting IDs. These logs never include audio, captions, translations, keys, or names.</li>
+            <li><strong>Zoom app installation:</strong> when the Zoom app is installed, Zoom sends us an authorization token. We use it only to finish the installation, and we don't keep it.</li>
         </ul>
 
         <h2>What stays on your device</h2>
-        <p>Some pages remember small settings in your browser, such as caption text size and display colors. The Zoom app also remembers the leader's access code. These stay on your device. The access code is sent to us only when you start a session, to check it, and is not stored. We do not use cookies.</p>
+        <p>Some pages remember small settings in your browser, such as caption text size, display colors, and the leader's language choices. The Zoom app also remembers the leader's access code. These stay on your device. The access code is sent to us only when you start a session, to check it. We do not use cookies.</p>
 
         <h2>Other services</h2>
-        <p>Like any website, our hosting provider can see the IP address of each visitor. The pages load a QR-code library from Cloudflare's cdnjs, and the Zoom app loads Zoom's own app software. When used inside Zoom, Zoom's privacy policy also applies.</p>
+        <p>Like any website, our hosting provider can see the IP address of each visitor; we use it only briefly in memory to slow down repeated wrong access codes. The pages load a QR-code library from Cloudflare's cdnjs, and the Zoom app loads Zoom's own app software. When used inside Zoom, Zoom's privacy policy also applies.</p>
 
         <h2>Changes</h2>
         <p>If how Recovery Translator handles data changes, we will update this page and the date at the top.</p>
 
         <h2>Contact</h2>
-        <p>Questions or concerns about privacy? Email <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
+        <p>Questions or concerns about privacy, or a request to delete your group's saved settings? Email <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</p>
 <h2>Zoom app: removing it and your data</h2>
-<p>Recovery Translator stores no Zoom user data, so there is nothing to delete when the app is removed. Removing it stops all access immediately. See <a href="/docs#remove">how to remove the app</a>.</p>
+<p>When the Recovery Translator app is removed from a Zoom account, Zoom tells our server, and we immediately delete that Zoom user's saved group settings (the encrypted Gemini key and the hashed website access code). Removing the app also stops all access to meetings right away. See <a href="/docs#remove">how to remove the app</a>.</p>
 </main>
 <footer>Questions? Email <a href="mailto:dynontricia@gmail.com">dynontricia@gmail.com</a>.</footer>
 </body>

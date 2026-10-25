@@ -25,8 +25,11 @@
         .col-qr .hint { font-size: 13px; color: #94a3b8; line-height: 1.5; }
         .col-qr .url { font-size: 12px; color: #64748b; word-break: break-all; }
 
-        /* Two 40% caption columns */
-        .col-cap { flex: 1 1 40%; display: flex; flex-direction: column; min-width: 0; }
+        /* One caption column per session language, sharing the remaining 80% */
+        .col-cap { flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; border-left: 1px solid #334155; }
+        .style-ctl { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+        .style-ctl label { font-size: 11px; color: #64748b; }
+        .style-ctl select { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 3px 6px; font-size: 12px; }
         .cap-header {
             display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
             padding: 12px 18px; background: #1e293b; border-bottom: 1px solid #334155;
@@ -40,7 +43,6 @@
             flex: 1; overflow-y: auto; padding: 28px 32px; font-size: 32px;
             line-height: 1.6; word-wrap: break-word; white-space: pre-wrap;
         }
-        .col-es { border-left: 1px solid #334155; }
 
         .err { padding: 40px; font-size: 20px; color: #fca5a5; }
     </style>
@@ -53,15 +55,12 @@
         <div id="qr-container"></div>
         <div class="hint">Scan to join on your phone</div>
         <div class="url" id="url"></div>
-    </div>
-
-    <div class="col-cap col-en">
-        <div class="cap-header">
-            <span class="cap-title">English</span>
-            <label style="font-size:11px;color:#64748b">Size
+        <!-- Applies to every caption column; remembered on this computer -->
+        <div class="style-ctl">
+            <label>Size
                 <select data-ctl="size"><option>24</option><option>28</option><option selected>32</option><option>40</option><option>48</option><option>60</option></select>
             </label>
-            <label style="font-size:11px;color:#64748b">Font
+            <label>Font
                 <select data-ctl="font">
                     <option value="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">System</option>
                     <option value="Georgia, serif">Serif</option>
@@ -69,27 +68,19 @@
                     <option value="'Comic Sans MS', 'Comic Sans', cursive">Comic</option>
                 </select>
             </label>
-            <label style="font-size:11px;color:#64748b">Bg
+            <label>Bg
                 <select data-ctl="bg"><option value="#0f172a">Dark</option><option value="#ffffff">White</option><option value="#000000">Black</option><option value="#1a202c">Slate</option><option value="#fffbea">Cream</option></select>
             </label>
-            <label style="font-size:11px;color:#64748b">Text
+            <label>Text
                 <select data-ctl="fg"><option value="#e2e8f0">Light</option><option value="#000000">Black</option><option value="#ffffff">White</option><option value="#fbbf24">Amber</option></select>
             </label>
-            <button onclick="popout('english')">Pop out ↗</button>
         </div>
-        <div class="cap-body" id="cap-en"></div>
     </div>
-
-    <div class="col-cap col-es">
-        <div class="cap-header">
-            <span class="cap-title">Español</span>
-            <button onclick="popout('spanish')">Abrir ventana ↗</button>
-        </div>
-        <div class="cap-body" id="cap-es"></div>
-    </div>
+    <!-- Caption columns are added here, one per session language -->
 </div>
 
 <script src="/captions.js"></script>
+<script src="/languages.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <!--suppress JSUnresolvedReference -->
 <script>
@@ -105,10 +96,11 @@
         document.getElementById('url').textContent = joinUrl;
         new QRCode(document.getElementById('qr-container'), { text: joinUrl, width: 150, height: 150 });
 
-        // Font/color controls (English column), applied to both caption bodies,
-        // persisted locally so a room's preferred settings stick.
-        const bodies = [document.getElementById('cap-en'), document.getElementById('cap-es')];
-        const saved = JSON.parse(localStorage.getItem('rt-display-style') || '{}');
+        // Font/color controls, applied to every caption column and
+        // remembered on this computer so a room's preferred settings stick.
+        let bodies = [];
+        let saved = {};
+        try { saved = JSON.parse(localStorage.getItem('rt-display-style') || '{}'); } catch (e) {}
         function applyStyle() {
             bodies.forEach(b => {
                 b.style.fontSize = (saved.size || 32) + 'px';
@@ -122,20 +114,45 @@
             if (saved[key]) sel.value = saved[key];
             sel.addEventListener('change', () => {
                 saved[key] = sel.value;
-                localStorage.setItem('rt-display-style', JSON.stringify(saved));
+                try { localStorage.setItem('rt-display-style', JSON.stringify(saved)); } catch (e) {}
                 applyStyle();
             });
         });
-        applyStyle();
 
-        function subscribe(lang, boxId) {
-            const box = document.getElementById(boxId);
-            attachCaptions(`/stream/${code}/${lang}`, box, {
-                onEnded: () => box.appendChild(document.createTextNode('\n\n[Session ended]'))
+        // One column per language the session offers.
+        function addColumn(lang) {
+            const col = document.createElement('div');
+            col.className = 'col-cap';
+            const head = document.createElement('div');
+            head.className = 'cap-header';
+            const title = document.createElement('span');
+            title.className = 'cap-title';
+            title.textContent = LANGUAGES[lang].native;
+            const pop = document.createElement('button');
+            pop.textContent = '↗';
+            pop.title = 'Pop out';
+            pop.onclick = () => popout(lang);
+            head.append(title, pop);
+            const body = document.createElement('div');
+            body.className = 'cap-body';
+            col.append(head, body);
+            document.getElementById('layout').appendChild(col);
+            bodies.push(body);
+            attachCaptions(`/stream/${code}/${lang}`, body, {
+                onEnded: () => body.appendChild(document.createTextNode('\n\n[Session ended]'))
             });
         }
-        subscribe('english', 'cap-en');
-        subscribe('spanish', 'cap-es');
+
+        fetch(`/session/info?code=${encodeURIComponent(code)}`)
+            .then(r => r.json())
+            .then(info => {
+                if (!info.exists) {
+                    document.getElementById('url').textContent = 'This session is not live.';
+                    return;
+                }
+                info.languages.forEach(addColumn);
+                applyStyle();
+            });
     }
 
     function popout(lang) {

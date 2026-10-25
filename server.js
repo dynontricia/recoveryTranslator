@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const WebSocket = require('ws');
+const store = require('./store');
+const { LANGUAGES, LANGUAGE_ORDER, normalizeLanguage } = require('./languages');
 
 // Safety net: an uncaught error anywhere -- especially from the native
 // @zoom/rtms package, which we don't fully control -- would otherwise crash
@@ -21,9 +23,10 @@ const PORT = 3000;
 
 // ---- Sessions ---------------------------------------------------------------
 // sessions[code] = {
-//   mode: 'audio_es' | 'audio_en' | 'audio_both',
+//   languages: ['en', 'es', ...],  // caption languages (see languages.js)
+//   audio: ['es', ...],            // the ones listeners can also hear
 //   audioSource: 'device' | 'zoom',
-//   clients: { english: [SSE res...], spanish: [SSE res...] },
+//   clients: { en: [SSE res...], es: [...], ... },  // one list per caption language
 //   leaderSocket: ws | null,
 //   leaderTeardownTimer,
 //   listenerSockets: { [listenerId]: { ws, language, wantsAudio } },
@@ -31,21 +34,35 @@ const PORT = 3000;
 //   zoomWaiting: bool,  // wants Zoom audio; the next stream from its meeting attaches
 //   meetingId: string | null,  // the Zoom meeting this session captions
 //   leaderToken,        // secret given only to whoever started the session
+//   geminiKey,          // this session's Gemini key (the group's, or the server's); memory only
 //   linkCode: string | null,   // one-time code to link a browser-started session to a meeting
 //   ended: bool,
 //   createdAt
 // }
 const sessions = {};
 
-// Every session has English and Spanish captions. The mode says which
-// language(s) listeners can also hear as audio.
-const SESSION_MODES = ['audio_es', 'audio_en', 'audio_both'];
+// The leader picks the caption languages and which of them are also spoken.
+// Each caption language is one more Gemini translator on the same audio, so
+// cost grows with the number of languages. Speaking a language implies
+// captions in it. With no choice (or an old page sending `mode`), sessions
+// get English and Spanish captions with Spanish audio, as before.
+const LEGACY_MODES = { audio_es: ['es'], audio_en: ['en'], audio_both: ['en', 'es'] };
+
+function parseLanguageChoice(body) {
+    const pick = list => (Array.isArray(list) ? list : []).map(normalizeLanguage).filter(Boolean);
+    let languages = pick(body.languages);
+    let audio = pick(body.audio);
+    if (!languages.length) {
+        languages = ['en', 'es'];
+        if (!audio.length) audio = LEGACY_MODES[body.mode] || ['es'];
+    }
+    languages = LANGUAGE_ORDER.filter(l => languages.includes(l) || audio.includes(l));
+    audio = languages.filter(l => audio.includes(l));
+    return { languages, audio };
+}
 
 function audioLanguages(session) {
-    const mode = session && session.mode;
-    if (mode === 'audio_en') return ['english'];
-    if (mode === 'audio_both') return ['english', 'spanish'];
-    return ['spanish'];
+    return (session && session.audio) || [];
 }
 
 // Session codes are what let someone read a meeting's captions, so they come
@@ -68,18 +85,20 @@ function safeEqual(a, b) {
 // ever gets that meeting's audio. A Zoom session started in the browser has
 // no meeting yet; it gets a one-time link code the leader types into the
 // panel in their meeting.
-function createSession(mode, audioSource, meetingId) {
+function createSession(choice, audioSource, meetingId, geminiKey) {
     let code;
     do { code = randomCode(); } while (sessions[code]);
     const zoom = audioSource === 'zoom';
     sessions[code] = {
-        mode: SESSION_MODES.includes(mode) ? mode : 'audio_es',
+        languages: choice.languages,
+        audio: choice.audio,
         audioSource: zoom ? 'zoom' : 'device',
-        clients: { english: [], spanish: [] },
+        clients: Object.fromEntries(choice.languages.map(l => [l, []])),
         leaderSocket: null,
         listenerSockets: {},
         meetingId: zoom && meetingId ? meetingId : null,
         leaderToken: crypto.randomBytes(24).toString('hex'),
+        geminiKey,
         linkCode: zoom && !meetingId ? randomCode() : null,
         zoomWaiting: false,
         createdAt: Date.now()
@@ -91,6 +110,7 @@ function endSession(sessionCode) {
     const session = sessions[sessionCode];
     if (!session) return;
     session.ended = true;
+    session.geminiKey = null;
     if (session.leaderTeardownTimer) clearTimeout(session.leaderTeardownTimer);
     teardownCaptionPipeline('leader-' + sessionCode);
     // Release any Zoom stream this session claimed (it can be claimed again).
@@ -99,12 +119,12 @@ function endSession(sessionCode) {
     }
     session.zoomWaiting = false;
     const endMessage = `data: ${JSON.stringify({ type: 'session_ended' })}\n\n`;
-    [...session.clients.english, ...session.clients.spanish].forEach(client => {
+    Object.values(session.clients).flat().forEach(client => {
         try { client.write(endMessage); } catch (e) {}
     });
     setTimeout(() => {
         if (!sessions[sessionCode]) return;
-        [...session.clients.english, ...session.clients.spanish].forEach(client => {
+        Object.values(session.clients).flat().forEach(client => {
             try { client.end(); } catch (e) {}
         });
         if (session.leaderSocket) session.leaderSocket.close();
@@ -118,7 +138,7 @@ function endSession(sessionCode) {
 // Caption text to every screen showing this language.
 function broadcast(sessionCode, language, text) {
     const session = sessions[sessionCode];
-    if (!session) return;
+    if (!session || !session.clients[language]) return;
     const message = `data: ${JSON.stringify({ text })}\n\n`;
     session.clients[language].forEach(client => {
         try {
@@ -274,11 +294,11 @@ function stopRtmsStream(streamId) {
 }
 
 // ---- Gemini Live Translate --------------------------------------------------
-// Each session runs two translators over the same audio: one into English and
-// one into Spanish. Each gives captions (outputTranscription) and, when the
-// session offers audio in that language, speech (modelTurn inlineData,
-// PCM16 24kHz). echoTargetLanguage passes speech already in the target
-// language through, so every speaker is captioned in both languages.
+// Each session runs one translator per caption language, all fed the same
+// audio. Each gives captions (outputTranscription) and, when the session
+// offers audio in that language, speech (modelTurn inlineData, PCM16 24kHz).
+// echoTargetLanguage passes speech already in the target language through,
+// so every speaker is captioned in every session language.
 //
 // Input is PCM16 16kHz -- what Zoom RTMS and the browser already send -- so
 // no resampling. Google recommends ~100ms chunks; our frames are 20ms, so
@@ -297,12 +317,11 @@ const GEMINI_BUFFER_MAX_BYTES = 3 * 32000;     // hold up to 3s of audio while (
 const GEMINI_ROTATE_MS = 9 * 60 * 1000;        // hand off before the ~10-minute limit
 const GEMINI_HANDOFF_GRACE_MS = 5000;          // old connection's time to finish its last words
 const GEMINI_RECONNECT_MAX_MS = 15000;
-const GEMINI_LANGUAGE_CODES = { english: 'en', spanish: 'es' };
 
 function createTranslator(sessionCode, language, withAudio) {
     const t = {
         sessionCode,
-        language,              // 'english' | 'spanish'
+        language,              // a languages.js code: 'en', 'es', 'pl', 'fr'
         withAudio,             // generate speech, not just captions
         active: null,          // the connection audio goes to
         opening: null,         // a connection being set up (start or hand-off)
@@ -318,9 +337,11 @@ function createTranslator(sessionCode, language, withAudio) {
 
 function openGeminiConnection(t, why) {
     if (t.closed || t.opening) return;
-    const key = process.env.GEMINI_API_KEY;
+    // Each session carries its own key: the group's, or the server's.
+    const session = sessions[t.sessionCode];
+    const key = session && session.geminiKey;
     if (!key) {
-        console.error(`[${t.sessionCode}] gemini: GEMINI_API_KEY is not set -- no translation`);
+        console.error(`[${t.sessionCode}] gemini: no API key for this session -- no translation`);
         return;
     }
     // Key goes in the URL (Google's documented form) -- never log this URL.
@@ -336,7 +357,7 @@ function openGeminiConnection(t, why) {
                 generationConfig: {
                     responseModalities: [t.withAudio ? 'AUDIO' : 'TEXT'],
                     translationConfig: {
-                        targetLanguageCode: GEMINI_LANGUAGE_CODES[t.language],
+                        targetLanguageCode: t.language, // languages.js keys are Gemini's codes
                         echoTargetLanguage: true
                     }
                 }
@@ -472,7 +493,7 @@ function createCaptionPipeline(streamKey, sessionCode) {
     const pipeline = {
         sessionCode,
         audioFrameCount: 0,
-        translators: ['english', 'spanish'].map(lang => createTranslator(sessionCode, lang, audio.includes(lang)))
+        translators: sessions[sessionCode].languages.map(lang => createTranslator(sessionCode, lang, audio.includes(lang)))
     };
     rtmsCaptionPipelines.set(streamKey, pipeline);
     return pipeline;
@@ -585,7 +606,86 @@ function canControl(req, session, body) {
 
 function sessionSummary(code) {
     const s = sessions[code];
-    return { sessionCode: code, mode: s.mode, audioConnected: !!findPipelineBySession(code) };
+    return { sessionCode: code, languages: s.languages, audio: s.audio, audioConnected: !!findPipelineBySession(code) };
+}
+
+// ---- Who may start a session, and with which Gemini key ---------------------
+// In order:
+//   1. An access code: one you issued (store.createCodeGroup), a group's
+//      website code from the Zoom app, or the original ACCESS_CODE variable.
+//   2. No code, from the Zoom panel: the key that Zoom user saved in Settings.
+// Codes you issue without a key, and ACCESS_CODE, use the server's key.
+function resolveCredentials(req, body) {
+    const code = typeof body.accessCode === 'string' ? body.accessCode.trim() : '';
+    if (code) {
+        if (process.env.ACCESS_CODE && safeEqual(code, process.env.ACCESS_CODE)) {
+            return { geminiKey: process.env.GEMINI_API_KEY || null };
+        }
+        const g = store.findByAccessCode(code);
+        if (g && g.geminiKey) {
+            const key = store.geminiKeyFor(g);
+            return key ? { geminiKey: key } : { error: "This group's saved key could not be read. Save it again.", status: 409 };
+        }
+        if (g) return { geminiKey: process.env.GEMINI_API_KEY || null };
+        return { error: 'Invalid access code', status: 401 };
+    }
+    const panel = readPanelToken(req);
+    const g = panel && store.findByZoomUser(panel.uid);
+    if (g && g.active && g.geminiKey) {
+        const key = store.geminiKeyFor(g);
+        if (key) return { geminiKey: key };
+        return { error: 'Your saved key could not be read. Save it again in Settings.', status: 409 };
+    }
+    return { error: 'Enter an access code, or save your Gemini key in Settings.', status: 401 };
+}
+
+// Slows down guessing: 10 wrong codes from one address locks it out for 15
+// minutes. (The first X-Forwarded-For entry can be faked, which only lets
+// someone dodge the limit, not lock others out. Issued codes are 12 random
+// characters, far too many to guess anyway.)
+const failedAttempts = new Map(); // ip -> { count, first }
+const FAIL_LIMIT = 10, FAIL_WINDOW_MS = 15 * 60 * 1000;
+function clientIp(req) {
+    return String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?';
+}
+function isLockedOut(req) {
+    const f = failedAttempts.get(clientIp(req));
+    if (!f) return false;
+    if (Date.now() - f.first > FAIL_WINDOW_MS) { failedAttempts.delete(clientIp(req)); return false; }
+    return f.count >= FAIL_LIMIT;
+}
+function noteFailure(req) {
+    const ip = clientIp(req);
+    const f = failedAttempts.get(ip);
+    if (!f || Date.now() - f.first > FAIL_WINDOW_MS) failedAttempts.set(ip, { count: 1, first: Date.now() });
+    else f.count++;
+}
+
+// Checks a Gemini key with Google before saving it, so a typo shows up now,
+// not as silence in the middle of a meeting. The key goes in a header, not
+// the URL, so it can't end up in anyone's request logs.
+async function validateGeminiKey(key) {
+    if (typeof key !== 'string' || !/^[A-Za-z0-9_\-]{20,200}$/.test(key.trim())) {
+        return { ok: false, error: "That doesn't look like a Gemini API key." };
+    }
+    try {
+        const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', {
+            headers: { 'x-goog-api-key': key.trim() }
+        });
+        if (r.ok) return { ok: true };
+        if ([400, 401, 403].includes(r.status)) return { ok: false, error: 'Google rejected that key. Check it and try again.' };
+        return { ok: false, error: `Google couldn't check the key right now (${r.status}). Try again in a minute.` };
+    } catch (err) {
+        return { ok: false, error: "Couldn't reach Google to check the key. Try again in a minute." };
+    }
+}
+
+// Admin API for you, with ADMIN_TOKEN as a bearer token (see README).
+function isAdmin(req) {
+    const token = process.env.ADMIN_TOKEN;
+    if (!token || token.length < 24) return false;
+    const header = String(req.headers.authorization || '');
+    return header.startsWith('Bearer ') && safeEqual(header.slice(7), token);
 }
 
 // ---- HTTP -------------------------------------------------------------------
@@ -629,7 +729,10 @@ function readRawBody(req, callback) {
 
 function readJson(req, callback) {
     let body = '';
-    req.on('data', chunk => { body += chunk; });
+    req.on('data', chunk => {
+        body += chunk;
+        if (body.length > 64 * 1024) { body = ''; req.destroy(); } // nothing we accept is this big
+    });
     req.on('end', () => {
         let parsed = {};
         try { parsed = JSON.parse(body); } catch (e) {}
@@ -682,6 +785,7 @@ const STATIC_FILES = {
     '/support': ['support.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
     '/docs': ['docs.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
     '/captions.js': ['captions.js', 'application/javascript; charset=UTF-8'],
+    '/languages.js': ['languages.js', 'application/javascript; charset=UTF-8'],
     '/logo.png': ['recoveryTrans.png', 'image/png']
 };
 
@@ -723,25 +827,31 @@ const server = http.createServer((req, res) => {
 
     else if (req.method === 'POST' && pathname === '/session/create') {
         readJson(req, (body) => {
-            if (body.accessCode !== process.env.ACCESS_CODE) {
-                sendJson(res, 401, { error: 'Invalid access code' });
+            if (isLockedOut(req)) { sendJson(res, 429, { error: 'Too many wrong codes. Try again in 15 minutes.' }); return; }
+            const creds = resolveCredentials(req, body);
+            if (creds.error) {
+                if (creds.status === 401 && body.accessCode) noteFailure(req);
+                sendJson(res, creds.status, { error: creds.error });
                 return;
             }
+            if (!creds.geminiKey) { sendJson(res, 500, { error: 'The server has no Gemini key set up.' }); return; }
             // Started from the Zoom panel: the session belongs to that meeting.
             const panel = readPanelToken(req);
-            const code = createSession(body.mode, body.audioSource, panel && panel.mid);
+            const code = createSession(parseLanguageChoice(body), body.audioSource, panel && panel.mid, creds.geminiKey);
             const s = sessions[code];
             const zoomAudio = s.audioSource === 'zoom' && s.meetingId ? connectZoomAudio(code) : undefined;
-            sendJson(res, 200, { sessionCode: code, leaderToken: s.leaderToken, linkCode: s.linkCode, zoomAudio });
+            sendJson(res, 200, { sessionCode: code, leaderToken: s.leaderToken, linkCode: s.linkCode, zoomAudio,
+                languages: s.languages, audio: s.audio });
         });
     }
 
     // Live captions for one language, as server-sent events.
     else if (req.method === 'GET' && pathname.startsWith('/stream/')) {
-        const [, , sessionCode, language] = pathname.split('/');
+        const [, , sessionCode, rawLanguage] = pathname.split('/');
         const session = sessions[sessionCode];
+        const language = normalizeLanguage(rawLanguage);
         if (!session) { sendJson(res, 404, { error: 'Session not found' }); return; }
-        if (!['english', 'spanish'].includes(language)) { sendJson(res, 400, { error: 'Invalid language' }); return; }
+        if (!session.clients[language]) { sendJson(res, 400, { error: 'This session has no captions in that language' }); return; }
         res.writeHead(200, {
             'Content-Type': 'text/event-stream; charset=UTF-8',
             'Cache-Control': 'no-cache',
@@ -754,6 +864,73 @@ const server = http.createServer((req, res) => {
         req.on('close', () => {
             session.clients[language] = session.clients[language].filter(c => c !== res);
         });
+    }
+
+    // The Zoom panel's Settings screen: this Zoom user's saved settings.
+    // Never returns the key itself -- only its last four characters.
+    else if (req.method === 'GET' && pathname === '/zoom/config') {
+        const panel = readPanelToken(req);
+        if (!panel) { sendJson(res, 401, { error: 'Open this from inside a Zoom meeting.' }); return; }
+        const g = store.findByZoomUser(panel.uid);
+        sendJson(res, 200, {
+            storeEnabled: store.enabled(),
+            configured: !!(g && g.active && g.geminiKey),
+            group: g ? store.describe(g) : null
+        });
+    }
+
+    // Saves (or replaces) this Zoom user's Gemini key, after Google confirms
+    // it works. The first save also returns a website access code -- once.
+    else if (req.method === 'POST' && pathname === '/zoom/config') {
+        readJson(req, async (body) => {
+            const panel = readPanelToken(req);
+            if (!panel) { sendJson(res, 401, { error: 'Open this from inside a Zoom meeting.' }); return; }
+            if (!store.enabled()) { sendJson(res, 503, { error: "This server isn't set up to save keys." }); return; }
+            const check = await validateGeminiKey(body.geminiKey);
+            if (!check.ok) { sendJson(res, 400, { error: check.error }); return; }
+            const result = store.saveZoomGroup(panel.uid, { label: body.label, geminiKey: body.geminiKey.trim() });
+            console.log(`Settings saved from the Zoom app (group ${result.group.id})`);
+            sendJson(res, 200, { configured: true, group: result.group, accessCode: result.accessCode });
+        });
+    }
+
+    // "Remove saved key": deletes this Zoom user's record entirely.
+    else if (req.method === 'POST' && pathname === '/zoom/config/delete') {
+        const panel = readPanelToken(req);
+        if (!panel) { sendJson(res, 401, { error: 'Open this from inside a Zoom meeting.' }); return; }
+        const removed = store.deleteByZoomUser(panel.uid);
+        console.log(`Settings removed from the Zoom app (${removed} record(s))`);
+        sendJson(res, 200, { removed });
+    }
+
+    // ---- Admin API (Authorization: Bearer <ADMIN_TOKEN>) ----
+    else if (pathname.startsWith('/admin/')) {
+        if (isLockedOut(req)) { sendJson(res, 429, { error: 'Too many attempts' }); return; }
+        if (!isAdmin(req)) { noteFailure(req); sendJson(res, 401, { error: 'Not authorized' }); return; }
+        const parts = pathname.split('/').filter(Boolean); // ['admin','groups',id?,action?]
+        if (parts[1] !== 'groups') { sendJson(res, 404, { error: 'Not found' }); return; }
+
+        if (req.method === 'GET' && parts.length === 2) {
+            sendJson(res, 200, { groups: store.list() });
+        } else if (req.method === 'POST' && parts.length === 2) {
+            readJson(req, async (body) => {
+                if (!store.enabled()) { sendJson(res, 503, { error: 'Set KEY_ENCRYPTION_KEY first.' }); return; }
+                if (body.geminiKey) {
+                    const check = await validateGeminiKey(body.geminiKey);
+                    if (!check.ok) { sendJson(res, 400, { error: check.error }); return; }
+                }
+                const result = store.createCodeGroup({ label: body.label, geminiKey: body.geminiKey ? body.geminiKey.trim() : null });
+                console.log(`Admin: created group ${result.group.id}`);
+                sendJson(res, 200, result);
+            });
+        } else if (req.method === 'POST' && parts.length === 4 && ['enable', 'disable', 'delete'].includes(parts[3])) {
+            const id = parts[2];
+            const done = parts[3] === 'delete' ? store.remove(id) : store.setActive(id, parts[3] === 'enable');
+            console.log(`Admin: ${parts[3]} group ${id}${done ? '' : ' (not found)'}`);
+            sendJson(res, done ? 200 : 404, done ? { ok: true, group: done === true ? undefined : done } : { error: 'No such group' });
+        } else {
+            sendJson(res, 404, { error: 'Not found' });
+        }
     }
 
     // Which session the Zoom panel should show: only its own meeting's.
@@ -782,12 +959,17 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    else if (req.method === 'GET' && pathname === '/zoom/session-status') {
-        const code = parsedUrl.searchParams.get('code');
+    // Public facts about a session: whether it's live, its languages (for the
+    // listener's language list and the display columns), and whether audio is
+    // flowing. Nothing here needs more than the session code.
+    else if (req.method === 'GET' && (pathname === '/session/info' || pathname === '/zoom/session-status')) {
+        const code = String(parsedUrl.searchParams.get('code') || '').toUpperCase();
         const s = sessions[code];
+        const live = !!s && !s.ended;
         sendJson(res, 200, {
-            exists: !!s && !s.ended,
-            mode: s ? s.mode : null,
+            exists: live,
+            languages: live ? s.languages : [],
+            audio: live ? s.audio : [],
             audioConnected: !!findPipelineBySession(code)
         });
     }
@@ -832,7 +1014,10 @@ const server = http.createServer((req, res) => {
     //     the Zoom console; we echo back an HMAC-signed token.
     //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
     //     meeting's audio stream.
-    else if (req.method === 'POST' && pathname === '/zoom/rtms-webhook') {
+    //   app_deauthorized -- someone removed the app; delete their settings.
+    //     Also accepted at /zoom/deauthorize, for Zoom's separate
+    //     "Deauthorization Notification Endpoint" field.
+    else if (req.method === 'POST' && (pathname === '/zoom/rtms-webhook' || pathname === '/zoom/deauthorize')) {
         readRawBody(req, (rawBody) => {
             if (!verifyZoomSignature(req, rawBody)) {
                 console.warn('Zoom webhook rejected: missing, invalid, or expired signature');
@@ -852,6 +1037,16 @@ const server = http.createServer((req, res) => {
                 const encryptedToken = crypto.createHmac('sha256', secret).update(plainToken).digest('hex');
                 console.log('RTMS URL validation received, responding with signed token');
                 sendJson(res, 200, { plainToken, encryptedToken });
+                return;
+            }
+
+            // The app was removed from a Zoom account: delete that user's saved
+            // settings (key and website access code) right away.
+            if (payload.event === 'app_deauthorized') {
+                const uid = payload.payload && payload.payload.user_id;
+                const removed = uid ? store.deleteByZoomUser(String(uid)) : 0;
+                console.log(`Zoom app removed by a user -- deleted ${removed} saved record(s)`);
+                res.writeHead(200); res.end('ok');
                 return;
             }
 
@@ -993,7 +1188,9 @@ wss.on('connection', (ws, req) => {
 
     } else if (role === 'listener') {
         const id = randomCode();
-        const language = params.get('language') === 'spanish' ? 'spanish' : 'english';
+        // A language the session doesn't offer falls back to its first one.
+        const asked = normalizeLanguage(params.get('language'));
+        const language = session.languages.includes(asked) ? asked : session.languages[0];
         session.listenerSockets[id] = { ws, language, wantsAudio: false };
         // Tells the page whether to offer the audio button for this language.
         ws.send(JSON.stringify({ type: 'welcome', listenerId: id, audio: audioLanguages(session).includes(language) }));

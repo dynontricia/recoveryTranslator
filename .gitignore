@@ -151,10 +151,10 @@ vite.config.ts.timestamp-*
 # Datasource local storage ignored files
 /dataSources/
 /dataSources.local.xml
-.env
 node_modules
 .idea/
 /data/
 
 # macOS
 .DS_Store
+/Recovery Translator — Zoom Reviewer Test Plan.pdf

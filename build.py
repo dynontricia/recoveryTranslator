@@ -12,7 +12,7 @@ privacy = modal_body('modal-privacy')
 instructions = modal_body('modal-instructions')
 
 EMAIL = 'dynontricia@gmail.com'
-UPDATED = 'October 8, 2026'
+UPDATED = 'October 25, 2026'
 
 def page(slug, title, intro, body):
     nav = ''.join(
@@ -65,20 +65,38 @@ privacy_intro = first_p.group(1)
 privacy_body = privacy_body[first_p.end():].replace('<h3>', '<h2>').replace('</h3>', '</h2>')
 privacy_body += f'''
 <h2>Zoom app: removing it and your data</h2>
-<p>Recovery Translator stores no Zoom user data, so there is nothing to delete when the app is removed. Removing it stops all access immediately. See <a href="/docs#remove">how to remove the app</a>.</p>'''
+<p>When the Recovery Translator app is removed from a Zoom account, Zoom tells our server, and we immediately delete that Zoom user's saved group settings (the encrypted Gemini key and the hashed website access code). Removing the app also stops all access to meetings right away. See <a href="/docs#remove">how to remove the app</a>.</p>'''
 
 # ---------- Documentation ----------
 docs_body = f'''
 <h2 id="what">What it does</h2>
-<p>Recovery Translator gives a meeting live English and Spanish captions, whatever language someone speaks, plus an optional spoken translation people can listen to on their own phone. Listeners need no account or app; they join with a 6-character session code or QR code.</p>
+<p>Recovery Translator gives a meeting live captions in the languages the leader chooses (English, Spanish, Polish, and French), whatever language someone speaks, plus an optional spoken translation people can listen to on their own phone. Listeners need no account or app; they join with a 6-character session code or QR code and pick their language.</p>
 <p>Audio can come from a computer's microphone (or its system audio), or from a Zoom meeting through the Recovery Translator Zoom app. Translation is done by Google's Gemini Live API.</p>
 
 <h2 id="requirements">Requirements</h2>
 <ul>
-  <li>An access code to start sessions. Listeners don't need one. To request an access code, email <a href="mailto:{EMAIL}">{EMAIL}</a>.</li>
+  <li>To start sessions, one of:
+    <ul>
+      <li>an <strong>access code</strong> (email <a href="mailto:{EMAIL}">{EMAIL}</a> to request one), or</li>
+      <li>your group's own <strong>Gemini API key</strong>, from a Google project with billing turned on, saved in the Zoom app's Settings (see below).</li>
+    </ul>
+    Listeners don't need either.</li>
   <li>For the Zoom app: a Zoom account that can host meetings, the Zoom desktop client, and Zoom's <strong>Realtime Media Streams</strong> enabled for your account. You'll be asked to allow the app to access meeting audio when you start captions.</li>
   <li>Listeners: any phone, tablet, or computer with a current web browser.</li>
 </ul>
+
+<h2 id="gemini-key">Using your group's own Gemini key</h2>
+<p>Your group can pay Google directly for its own translation instead of using an access code. Google bills your group's Google account.</p>
+<div class="card"><strong>Turn on billing.</strong> With a free-tier key, Google may use your meeting audio to improve its products, and people at Google may read it. That is not safe for an anonymous meeting. Only use a key from a project with billing turned on, so Google's paid terms apply.</div>
+<ol>
+  <li>Sign in to <strong>Google AI Studio</strong> (aistudio.google.com) with your group's Google account and open <strong>Get API key</strong>.</li>
+  <li>Create a key. Google puts it in a Google Cloud project.</li>
+  <li>On the same page, choose <strong>Set up billing</strong> for that project and link a billing account. Google's screens change from time to time; what matters is that the project's plan shows a <strong>paid</strong> tier, not Free.</li>
+  <li>In Google Cloud Billing, set a <strong>budget alert</strong>, so you hear about costs before they surprise you. Each caption language in a session is a separate translation, so four languages cost about twice what two do.</li>
+  <li>In a Zoom meeting, open <strong>Apps → Recovery Translator → Settings</strong>, paste the key, add your group's name if you like, and tap <strong>Save key</strong>. We check the key with Google, then store it encrypted.</li>
+  <li>The first time, the panel shows a <strong>website access code</strong>, only once. Write it down: it lets you start sessions on the website with your key.</li>
+</ol>
+<p>After that, you start sessions in Zoom without a code. To change the key, paste a new one in Settings. To delete it, tap <strong>Remove saved key</strong>, or remove the app from Zoom.</p>
 
 <h2 id="add">Adding the Zoom app</h2>
 <ol>
@@ -90,15 +108,16 @@ docs_body = f'''
 <h2 id="zoom">Using it in a Zoom meeting</h2>
 <ol>
   <li>Start your meeting and open <strong>Apps → Recovery Translator</strong>.</li>
-  <li>Enter your access code, choose the session type, and tap <strong>Start session</strong>. (Or start the session on the website, choose <strong>A Zoom meeting</strong> as the audio source, and the panel will pick it up.)</li>
+  <li>Enter your access code (not needed if your group saved its own key), check the <strong>languages</strong> the meeting needs, check <strong>Audio</strong> for any language people should also hear, and tap <strong>Start session</strong>.</li>
   <li>Allow Zoom to share meeting audio with the app when prompted. Captions appear in the panel within a few seconds.</li>
-  <li>Tap <strong>Post join link to meeting chat</strong> so participants can follow along on their own device, in English or Spanish.</li>
+  <li>Tap <strong>Post join link to meeting chat</strong>. The message has a line in each session language, so participants can follow along on their own device.</li>
   <li>Use <strong>Pause</strong> to stop sending audio for part of a meeting, and <strong>End session</strong> when you're done. The session also ends when the meeting ends.</li>
 </ol>
-<p>The panel's text-size buttons (A− / A+) and the <strong>English</strong> / <strong>English + Español</strong> switch change only your own view.</p>
+<p>The panel's text-size buttons (A− / A+) and its language buttons change only your own view. Each session belongs to its own meeting: nobody in another meeting can see it, and only the panel in this meeting (or the browser that started it) can pause or end it.</p>
+<p><strong>Started the session on the website?</strong> Choose <strong>A Zoom meeting</strong> as the audio source there. The leader screen shows a private <strong>Zoom link code</strong>. In the meeting's panel, enter it under <strong>Started a session in the browser?</strong> Each link code works once.</p>
 
 <h2 id="browser">Using it without Zoom</h2>
-{instructions.replace('<h3>', '<h3>').replace('Session Leaders', 'Session leaders')}
+{instructions.replace('Session Leaders', 'Session leaders')}
 
 <h2 id="remove">Removing the Zoom app</h2>
 <ol>
@@ -106,12 +125,13 @@ docs_body = f'''
   <li>Click <strong>Manage → Added Apps</strong>.</li>
   <li>Find <strong>Recovery Translator</strong> and click <strong>Remove</strong>.</li>
 </ol>
-<p>Recovery Translator does not store any Zoom user data, so nothing remains with us after removal. See the <a href="/privacy">Privacy Policy</a>.</p>
+<p>When the app is removed, Zoom tells us and we immediately delete any group settings saved from your Zoom account: the encrypted Gemini key and the hashed website access code. See the <a href="/privacy">Privacy Policy</a>.</p>
 
 <h2 id="data">Data and privacy, in brief</h2>
 <ul>
-  <li>No accounts or names are collected, and no audio, captions, or translations are saved.</li>
-  <li>Meeting audio is sent over an encrypted connection to Google's paid Gemini API for translation. Google does not use it to improve its products, and keeps it for up to 55 days for abuse monitoring only.</li>
+  <li>No personal accounts or names are collected, and no audio, captions, or translations are saved.</li>
+  <li>Meeting audio is sent over an encrypted connection to Google's Gemini API for translation. On the paid tier, Google does not use it to improve its products, and keeps it for up to 55 days for abuse monitoring only.</li>
+  <li>A group's saved Gemini key is stored encrypted; access codes and Zoom user IDs are stored only as one-way hashes.</li>
   <li>Everything said while captions are running is sent for translation. Leaders should tell the group at the start of the meeting.</li>
 </ul>
 <p>Full details: <a href="/privacy">Privacy Policy</a>.</p>
@@ -126,23 +146,35 @@ support_body = f'''
   <h3 style="margin-top:0">Contact</h3>
   <p style="margin:0">Email <a href="mailto:{EMAIL}">{EMAIL}</a>. Include your session code if you have one, and what you saw. We usually reply within 2 business days.</p>
 </div>
-<p>For access codes, questions about privacy, or reporting a security concern, use the same address.</p>
+<p>For access codes, deleting your group's saved settings, questions about privacy, or reporting a security concern, use the same address.</p>
 
 <h2 id="troubleshooting">Troubleshooting</h2>
 <h3>The Zoom panel says no session is running</h3>
-<p>Start one in the panel with your access code, or on the website with <strong>A Zoom meeting</strong> as the audio source.</p>
+<p>Start one in the panel. If you started it on the website, enter the <strong>Zoom link code</strong> from the leader screen under <strong>Started a session in the browser?</strong> A session only shows in the meeting it belongs to.</p>
+<h3>"No session is waiting for that link code"</h3>
+<p>Each link code works once, and only while its session is running. Check the code on the leader screen, or start the session from the Zoom panel instead.</p>
+<h3>Google rejected my Gemini key</h3>
+<ul>
+  <li>Copy the whole key again from Google AI Studio, with no spaces.</li>
+  <li>Make sure the key's project hasn't been deleted and the Gemini API is allowed for it.</li>
+</ul>
+<h3>"Your saved key could not be read"</h3>
+<p>Open <strong>Settings</strong> and save your key again. Nothing else is needed.</p>
 <h3>Captions never start in Zoom</h3>
 <ul>
   <li>Make sure you allowed Zoom to share meeting audio with the app when prompted.</li>
   <li>Your Zoom account admin may need to enable <strong>Realtime Media Streams</strong> for the account.</li>
+  <li>If you use your own key, check in Google AI Studio that billing is on and the key works.</li>
   <li>Tap <strong>Pause</strong>, then <strong>Start captions</strong> again.</li>
 </ul>
 <h3>Captions stopped partway through</h3>
 <p>Check your internet connection. Captions reconnect on their own after a short drop. If they don't come back within a minute, tap <strong>Start captions</strong> again.</p>
+<h3>My language isn't in the list</h3>
+<p>Listeners can only pick the languages the leader chose when starting the session. Ask the leader to include it next time.</p>
 <h3>I can't hear the spoken translation</h3>
 <ul>
   <li>Tap <strong>No sound? Play a test sound</strong> on the listener screen. If you don't hear the beep, check your device's volume, silent switch, and Bluetooth.</li>
-  <li>Spoken translation is only offered in the language(s) the leader chose when starting the session.</li>
+  <li>Spoken translation is only offered in the languages marked 🔊, which the leader chose.</li>
   <li>On a phone, keep the page open; some phones stop audio when the screen locks.</li>
 </ul>
 <h3>Translations are inaccurate</h3>
@@ -156,8 +188,15 @@ terms_body = f'''
 
 <h2>Access</h2>
 <ul>
-  <li>Starting a session requires an access code. Don't share it outside your group's trusted servants. We may change or revoke access codes at any time.</li>
+  <li>Starting a session requires an access code, or your group's own Gemini API key saved in the Zoom app. Don't share access codes outside your group's trusted servants. We may change or revoke access codes at any time.</li>
   <li>Listeners may join any session they have the code for, at the leader's invitation.</li>
+</ul>
+
+<h2>Using your own Gemini key</h2>
+<ul>
+  <li>If your group saves its own Gemini API key, Google bills your group's Google account for the translation it does, under Google's terms. We are not responsible for those charges. Setting a budget alert in Google Cloud is a good idea.</li>
+  <li>Only save a key from a Google project with billing turned on. With a free-tier key, Google's terms let it use meeting audio to improve its products, which is not appropriate for anonymous meetings.</li>
+  <li>You can delete a saved key at any time in the Zoom app's Settings, by removing the app, or by asking us.</li>
 </ul>
 
 <h2>Your responsibilities</h2>

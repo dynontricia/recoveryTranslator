@@ -28,25 +28,22 @@
 <body>
 <div class="bar">
     <strong>Live Transcript</strong>
-    <select id="lang-select">
-        <option value="english">English</option>
-        <option value="spanish">Español</option>
-    </select>
+    <select id="lang-select"></select>
     <span class="status" id="status">Connecting…</span>
 </div>
 <div class="transcript" id="transcript"></div>
 
 <script src="/captions.js"></script>
+<script src="/languages.js"></script>
 <script>
     const params = new URLSearchParams(location.search);
     const code = (params.get('session') || '').toUpperCase();
-    let lang = params.get('lang') === 'spanish' ? 'spanish' : 'english';
+    let lang = normalizeLanguage(params.get('lang')) || 'en';
     let es = null;
 
     const select = document.getElementById('lang-select');
     const box = document.getElementById('transcript');
     const statusEl = document.getElementById('status');
-    select.value = lang;
 
     function connect() {
         if (es) es.close();
@@ -64,7 +61,18 @@
     }
 
     select.addEventListener('change', () => { lang = select.value; connect(); });
-    connect();
+
+    // Offer only the languages this session has.
+    fetch(`/session/info?code=${encodeURIComponent(code)}`)
+        .then(r => r.json())
+        .then(info => {
+            const langs = info.exists ? info.languages : [lang];
+            if (!langs.includes(lang)) lang = langs[0];
+            select.innerHTML = langs.map(l => `<option value="${l}">${LANGUAGES[l].native}</option>`).join('');
+            select.value = lang;
+            connect();
+        })
+        .catch(() => connect());
 </script>
 </body>
 </html>
