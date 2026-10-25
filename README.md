@@ -27,7 +27,7 @@ Translation runs on Google's Gemini Live Translate model (`gemini-3.5-live-trans
 
 1. Open the site, tap **I am a session leader**, and enter your access code.
 2. Choose the session type and where the audio comes from, then tap **Start session**.
-3. For Zoom, open **Apps → Recovery Translator** in the meeting and tap **Start captions**. You can also start the session from the Zoom app and post the join link to the meeting chat.
+3. For Zoom, the easiest way is to start the session from **Apps → Recovery Translator** inside the meeting. If you start it on the website instead, you get a **Zoom link code**: enter it in the Zoom app in your meeting to connect that meeting's audio.
 4. Share the QR code. **Open big display screen** shows both languages side by side for a projector.
 5. Tap **End session** when you're done. A Zoom session also ends when the meeting's stream stops. **Pause** in the Zoom app keeps the session open.
 
@@ -74,6 +74,10 @@ Zoom app settings point at:
 Sessions live in memory only, so restarting the server ends every session.
 
 Every Zoom webhook request is checked against Zoom's signature (`x-zm-signature`) and rejected if it's missing, wrong, or more than 5 minutes old. Zoom OAuth tokens are used only to complete installation and are never stored.
+
+Each Zoom session belongs to one meeting. When Zoom opens the panel, it sends a signed, encrypted `x-zoom-app-context` header naming the user and meeting. The server gives the panel a short-lived token for that meeting, and a meeting's audio stream (`meeting_uuid` in the RTMS webhook) only attaches to a session from the same meeting. Two groups captioning at the same time never see or hear each other's sessions.
+
+Only the session's own leader can pause, connect, or end it: the panel in the same meeting, or the browser that started it (it holds a secret leader token). The session code that listeners use is not enough. Logs show meetings only as a short one-way hash, such as `meeting #1a1098c1`.
 
 ## Privacy
 

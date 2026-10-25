@@ -28,6 +28,10 @@ const PORT = 3000;
 //   leaderTeardownTimer,
 //   listenerSockets: { [listenerId]: { ws, language, wantsAudio } },
 //   zoomPaused: bool,   // host tapped "Stop captions" -- a stream stop is a pause
+//   zoomWaiting: bool,  // wants Zoom audio; the next stream from its meeting attaches
+//   meetingId: string | null,  // the Zoom meeting this session captions
+//   leaderToken,        // secret given only to whoever started the session
+//   linkCode: string | null,   // one-time code to link a browser-started session to a meeting
 //   ended: bool,
 //   createdAt
 // }
@@ -53,15 +57,31 @@ function randomCode() {
     return code;
 }
 
-function createSession(mode, audioSource) {
+// Compares two secrets without leaking, through timing, how much matched.
+function safeEqual(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    const x = Buffer.from(a), y = Buffer.from(b);
+    return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+
+// meetingId: set when the session is started from the Zoom panel, so it only
+// ever gets that meeting's audio. A Zoom session started in the browser has
+// no meeting yet; it gets a one-time link code the leader types into the
+// panel in their meeting.
+function createSession(mode, audioSource, meetingId) {
     let code;
     do { code = randomCode(); } while (sessions[code]);
+    const zoom = audioSource === 'zoom';
     sessions[code] = {
         mode: SESSION_MODES.includes(mode) ? mode : 'audio_es',
-        audioSource: audioSource === 'zoom' ? 'zoom' : 'device',
+        audioSource: zoom ? 'zoom' : 'device',
         clients: { english: [], spanish: [] },
         leaderSocket: null,
         listenerSockets: {},
+        meetingId: zoom && meetingId ? meetingId : null,
+        leaderToken: crypto.randomBytes(24).toString('hex'),
+        linkCode: zoom && !meetingId ? randomCode() : null,
+        zoomWaiting: false,
         createdAt: Date.now()
     };
     return code;
@@ -77,7 +97,7 @@ function endSession(sessionCode) {
     for (const [streamId, info] of rtmsStreamInfo) {
         if (info.sessionCode === sessionCode) { teardownCaptionPipeline(streamId); info.sessionCode = null; }
     }
-    if (zoomWaitingSession && zoomWaitingSession.sessionCode === sessionCode) zoomWaitingSession = null;
+    session.zoomWaiting = false;
     const endMessage = `data: ${JSON.stringify({ type: 'session_ended' })}\n\n`;
     [...session.clients.english, ...session.clients.spanish].forEach(client => {
         try { client.write(endMessage); } catch (e) {}
@@ -126,64 +146,63 @@ function relayTranslatedAudio(sessionCode, language, pcmBuffer) {
 }
 
 // ---- Zoom audio <-> session pairing ----------------------------------------
-// A session started with "Zoom meeting" as its audio input waits for Zoom's
-// audio stream; a Zoom stream that arrives first (e.g., RTMS auto-start)
-// waits for a session. Whichever shows up second connects them. Until
-// then, Zoom audio is ignored -- no Gemini connection, no cost.
-// Pairs one meeting at a time: the most recent waiting session.
-const rtmsClients = new Map();           // streamId -> RTMS client
-let zoomWaitingSession = null;           // { sessionCode, at }
-const rtmsStreamInfo = new Map();        // streamId -> { sessionCode|null, startedAt }
-const ZOOM_WAIT_MAX_MS = 30 * 60 * 1000; // a waiting session expires after 30 min
+// Every Zoom session belongs to one meeting (session.meetingId), and every
+// RTMS stream says which meeting it came from (the webhook's meeting_uuid).
+// A stream only ever attaches to a session from the SAME meeting, so two
+// groups captioning at the same time can never get each other's audio.
+//
+// A session that wants Zoom audio is marked zoomWaiting; a stream that
+// arrives first (e.g., RTMS auto-start) waits unclaimed. Whichever shows up
+// second connects them. Until then, Zoom audio is ignored -- no Gemini
+// connection, no cost.
+const rtmsClients = new Map();     // streamId -> RTMS client
+const rtmsStreamInfo = new Map();  // streamId -> { sessionCode|null, meetingId, startedAt }
+
+// Meeting IDs are Zoom identifiers we don't keep, so logs show only a short
+// one-way hash -- enough to check that the panel and the stream agree.
+function meetingTag(meetingId) {
+    return meetingId ? '#' + crypto.createHash('sha256').update(meetingId).digest('hex').slice(0, 8) : '#none';
+}
 
 function connectZoomAudio(sessionCode) {
     const session = sessions[sessionCode];
     if (!session || session.ended) return 'no-session';
+    // A browser-started session must be linked to a meeting first.
+    if (!session.meetingId) return 'not-linked';
     session.zoomPaused = false;
-    // Already receiving Zoom audio -- nothing to do. (Re-marking it as
-    // "waiting" would let the NEXT meeting's audio attach to it.)
+    // Already receiving Zoom audio -- nothing to do.
     if ([...rtmsStreamInfo.values()].some(info => info.sessionCode === sessionCode)) return 'connected';
-    // Zoom audio already flowing with no session? Claim the newest one now.
+    // This meeting's audio already flowing with no session? Claim it now.
     const unclaimed = [...rtmsStreamInfo.entries()]
-        .filter(([, info]) => !info.sessionCode)
+        .filter(([, info]) => !info.sessionCode && info.meetingId === session.meetingId)
         .sort((a, b) => b[1].startedAt - a[1].startedAt)[0];
     if (unclaimed) {
         attachRtmsStream(unclaimed[0], sessionCode);
         return 'connected';
     }
-    zoomWaitingSession = { sessionCode, at: Date.now() };
-    console.log(`[${sessionCode}] waiting for Zoom audio`);
+    session.zoomWaiting = true;
+    console.log(`[${sessionCode}] waiting for Zoom audio (meeting ${meetingTag(session.meetingId)})`);
     return 'waiting';
-}
-
-function takeWaitingZoomSession() {
-    const w = zoomWaitingSession;
-    if (!w) return null;
-    const s = sessions[w.sessionCode];
-    if (!s || s.ended || Date.now() - w.at > ZOOM_WAIT_MAX_MS) { zoomWaitingSession = null; return null; }
-    return w.sessionCode;
 }
 
 function attachRtmsStream(streamId, sessionCode) {
     const info = rtmsStreamInfo.get(streamId);
     if (!info) return null;
     info.sessionCode = sessionCode;
-    if (sessions[sessionCode]) sessions[sessionCode].zoomPaused = false;
-    if (zoomWaitingSession && zoomWaitingSession.sessionCode === sessionCode) zoomWaitingSession = null;
+    const session = sessions[sessionCode];
+    if (session) { session.zoomPaused = false; session.zoomWaiting = false; }
     const pipeline = createCaptionPipeline(streamId, sessionCode);
     console.log(`[${sessionCode}] Zoom audio connected (stream ${streamId})`);
     return pipeline;
 }
 
-// The session a Zoom panel should show: one waiting for Zoom audio, else the
-// newest session already receiving it.
-function currentZoomSessionCode() {
-    const waiting = takeWaitingZoomSession();
-    if (waiting) return waiting;
-    const newest = [...rtmsStreamInfo.values()]
-        .filter(info => info.sessionCode && sessions[info.sessionCode] && !sessions[info.sessionCode].ended)
-        .sort((a, b) => b.startedAt - a.startedAt)[0];
-    return newest ? newest.sessionCode : null;
+// The live session for one meeting -- the only one that meeting's panel sees.
+function currentZoomSessionCode(meetingId) {
+    if (!meetingId) return null;
+    const live = Object.entries(sessions)
+        .filter(([, s]) => !s.ended && s.meetingId === meetingId)
+        .sort((a, b) => b[1].createdAt - a[1].createdAt)[0];
+    return live ? live[0] : null;
 }
 
 function startRtmsStream(streamId, payload) {
@@ -201,12 +220,14 @@ function startRtmsStream(streamId, payload) {
 
     // Register the stream. It only gets a caption pipeline once a session
     // claims it (see connectZoomAudio).
-    rtmsStreamInfo.set(streamId, { sessionCode: null, startedAt: Date.now() });
-    const waitingCode = takeWaitingZoomSession();
-    if (waitingCode) {
-        attachRtmsStream(streamId, waitingCode);
+    const meetingId = payload && payload.meeting_uuid ? String(payload.meeting_uuid) : null;
+    rtmsStreamInfo.set(streamId, { sessionCode: null, meetingId, startedAt: Date.now() });
+    const waiting = Object.entries(sessions)
+        .find(([, s]) => !s.ended && s.zoomWaiting && meetingId && s.meetingId === meetingId);
+    if (waiting) {
+        attachRtmsStream(streamId, waiting[0]);
     } else {
-        console.log(`RTMS: stream ${streamId} started -- no session yet. Start one with "Zoom meeting" as the audio input.`);
+        console.log(`RTMS: stream ${streamId} started (meeting ${meetingTag(meetingId)}) -- no session for this meeting yet.`);
     }
 
     // Look the pipeline up per frame, so audio flows the moment a session
@@ -483,6 +504,90 @@ function findPipelineBySession(sessionCode) {
     return null;
 }
 
+// ---- Zoom panel identity ----------------------------------------------------
+// When Zoom loads the panel (our Home URL), it adds an x-zoom-app-context
+// header: JSON encrypted with AES-256-GCM, keyed with SHA-256 of our client
+// secret, so only Zoom could have written it. `uid` is the Zoom user and
+// `mid` the meeting. We read it once, then hand the panel a signed token
+// carrying both. The panel sends that token on every call, so the server
+// knows which meeting a request comes from without trusting the browser.
+//
+// Header layout: [1 byte IV length][IV][2 bytes AAD length, LE][AAD]
+//                [4 bytes ciphertext length, LE][ciphertext][16-byte tag]
+function decryptZoomAppContext(header, clientSecret) {
+    let buf = Buffer.from(header, 'base64');
+    const ivLength = buf.readUInt8(0); buf = buf.subarray(1);
+    const iv = buf.subarray(0, ivLength); buf = buf.subarray(ivLength);
+    const aadLength = buf.readUInt16LE(0); buf = buf.subarray(2);
+    const aad = buf.subarray(0, aadLength); buf = buf.subarray(aadLength);
+    const cipherLength = buf.readInt32LE(0); buf = buf.subarray(4);
+    const cipherText = buf.subarray(0, cipherLength);
+    const tag = buf.subarray(cipherLength);
+    if (tag.length !== 16) throw new Error('invalid tag length');
+    const key = crypto.createHash('sha256').update(clientSecret).digest();
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAAD(aad);
+    decipher.setAuthTag(tag);
+    return JSON.parse(Buffer.concat([decipher.update(cipherText), decipher.final()]).toString('utf8'));
+}
+
+// Returns { uid, mid } from a valid, unexpired context header, else null.
+function readZoomAppContext(req) {
+    const header = req.headers['x-zoom-app-context'];
+    const secret = process.env.ZOOM_CLIENT_SECRET;
+    if (!header || !secret) return null;
+    try {
+        const ctx = decryptZoomAppContext(header, secret);
+        // Zoom's timestamps may be seconds or milliseconds; accept either.
+        const exp = Number(ctx.exp);
+        if (exp && (exp < 1e12 ? exp * 1000 : exp) < Date.now()) return null;
+        if (!ctx.uid) return null;
+        return { uid: String(ctx.uid), mid: ctx.mid ? String(ctx.mid) : null };
+    } catch (err) {
+        console.warn('Zoom app context rejected:', err.message);
+        return null;
+    }
+}
+
+// Panel tokens: base64url(JSON {uid, mid, exp}) + "." + HMAC. The signing
+// key is made fresh at startup -- a restart clears all sessions anyway, and
+// reopening the panel gets a new token.
+const PANEL_TOKEN_KEY = crypto.randomBytes(32);
+const PANEL_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+
+function signPanelToken(uid, mid) {
+    const body = Buffer.from(JSON.stringify({ uid, mid, exp: Date.now() + PANEL_TOKEN_TTL_MS })).toString('base64url');
+    return body + '.' + crypto.createHmac('sha256', PANEL_TOKEN_KEY).update(body).digest('base64url');
+}
+
+function readPanelToken(req) {
+    const token = req.headers['x-panel-token'];
+    if (typeof token !== 'string' || !token.includes('.')) return null;
+    const [body, sig] = token.split('.');
+    const expected = crypto.createHmac('sha256', PANEL_TOKEN_KEY).update(body).digest('base64url');
+    if (!safeEqual(sig, expected)) return null;
+    try {
+        const data = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+        if (!data.exp || data.exp < Date.now()) return null;
+        return { uid: data.uid, mid: data.mid };
+    } catch (e) { return null; }
+}
+
+// Who may pause, connect, or end a session: the panel in that session's own
+// meeting, or whoever holds its leader token (the browser that started it).
+// Knowing the session code -- which every listener has -- is not enough.
+function canControl(req, session, body) {
+    if (!session) return false;
+    const panel = readPanelToken(req);
+    if (panel && panel.mid && session.meetingId && panel.mid === session.meetingId) return true;
+    return safeEqual(body && body.leaderToken, session.leaderToken);
+}
+
+function sessionSummary(code) {
+    const s = sessions[code];
+    return { sessionCode: code, mode: s.mode, audioConnected: !!findPipelineBySession(code) };
+}
+
 // ---- HTTP -------------------------------------------------------------------
 function serveFile(req, res, filePath, contentType, extraHeaders) {
     fs.readFile(filePath, (err, data) => {
@@ -572,8 +677,6 @@ const STATIC_FILES = {
     '/display.html': ['display.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
     '/transcript': ['transcript.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
     '/transcript.html': ['transcript.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
-    '/zoom-app': ['zoom-app.html', 'text/html; charset=UTF-8', ZOOM_APP_HEADERS],
-    '/zoom-app.html': ['zoom-app.html', 'text/html; charset=UTF-8', ZOOM_APP_HEADERS],
     '/privacy': ['privacy.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
     '/terms': ['terms.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
     '/support': ['support.html', 'text/html; charset=UTF-8', APP_PAGE_HEADERS],
@@ -599,15 +702,37 @@ const server = http.createServer((req, res) => {
         serveFile(req, res, path.join(__dirname, file), contentType, headers);
     }
 
+    // The Zoom panel. Zoom's signed context header says who and which meeting;
+    // the page gets a panel token for it. Opened outside a Zoom meeting, the
+    // token is empty and the panel says to open it from inside one.
+    else if ((req.method === 'GET' || req.method === 'HEAD') && (pathname === '/zoom-app' || pathname === '/zoom-app.html')) {
+        const ctx = readZoomAppContext(req);
+        const token = ctx && ctx.mid ? signPanelToken(ctx.uid, ctx.mid) : '';
+        if (ctx) console.log(`Zoom panel opened (meeting ${meetingTag(ctx.mid)})`);
+        fs.readFile(path.join(__dirname, 'zoom-app.html'), 'utf8', (err, html) => {
+            if (err) { res.writeHead(500); res.end(); return; }
+            res.writeHead(200, {
+                'Content-Type': 'text/html; charset=UTF-8',
+                'Cache-Control': 'no-store',
+                ...ZOOM_APP_HEADERS
+            });
+            res.end(req.method === 'HEAD' ? undefined
+                : html.replace('<meta name="rt-panel-token" content=""/>', `<meta name="rt-panel-token" content="${token}"/>`));
+        });
+    }
+
     else if (req.method === 'POST' && pathname === '/session/create') {
         readJson(req, (body) => {
             if (body.accessCode !== process.env.ACCESS_CODE) {
                 sendJson(res, 401, { error: 'Invalid access code' });
                 return;
             }
-            const code = createSession(body.mode, body.audioSource);
-            const zoomAudio = body.audioSource === 'zoom' ? connectZoomAudio(code) : undefined;
-            sendJson(res, 200, { sessionCode: code, zoomAudio });
+            // Started from the Zoom panel: the session belongs to that meeting.
+            const panel = readPanelToken(req);
+            const code = createSession(body.mode, body.audioSource, panel && panel.mid);
+            const s = sessions[code];
+            const zoomAudio = s.audioSource === 'zoom' && s.meetingId ? connectZoomAudio(code) : undefined;
+            sendJson(res, 200, { sessionCode: code, leaderToken: s.leaderToken, linkCode: s.linkCode, zoomAudio });
         });
     }
 
@@ -631,12 +756,30 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Which session the Zoom panel should show right now.
+    // Which session the Zoom panel should show: only its own meeting's.
     else if (req.method === 'GET' && pathname === '/zoom/current-session') {
-        const code = currentZoomSessionCode();
-        sendJson(res, 200, code
-            ? { sessionCode: code, mode: sessions[code].mode, audioConnected: !!findPipelineBySession(code) }
-            : { sessionCode: null });
+        const panel = readPanelToken(req);
+        if (!panel) { sendJson(res, 401, { error: 'Open this from inside a Zoom meeting.' }); return; }
+        const code = currentZoomSessionCode(panel.mid);
+        sendJson(res, 200, code ? sessionSummary(code) : { sessionCode: null });
+    }
+
+    // Links a session started in the browser to the meeting whose panel sent
+    // the one-time link code the browser showed its leader.
+    else if (req.method === 'POST' && pathname === '/zoom/link') {
+        readJson(req, (body) => {
+            const panel = readPanelToken(req);
+            if (!panel || !panel.mid) { sendJson(res, 401, { error: 'Open this from inside a Zoom meeting.' }); return; }
+            const linkCode = String(body.linkCode || '').trim().toUpperCase();
+            const entry = linkCode && Object.entries(sessions)
+                .find(([, s]) => !s.ended && s.linkCode && safeEqual(s.linkCode, linkCode));
+            if (!entry) { sendJson(res, 404, { error: 'No session is waiting for that link code.' }); return; }
+            const [code, s] = entry;
+            s.meetingId = panel.mid;
+            s.linkCode = null; // one use only
+            console.log(`[${code}] linked to meeting ${meetingTag(panel.mid)}`);
+            sendJson(res, 200, sessionSummary(code));
+        });
     }
 
     else if (req.method === 'GET' && pathname === '/zoom/session-status') {
@@ -653,8 +796,10 @@ const server = http.createServer((req, res) => {
     // as soon as the stream starts).
     else if (req.method === 'POST' && pathname === '/zoom/connect') {
         readJson(req, (body) => {
-            const status = connectZoomAudio(body.sessionCode);
-            sendJson(res, status === 'no-session' ? 404 : 200, { status });
+            const s = sessions[body.sessionCode];
+            if (!s || s.ended) { sendJson(res, 404, { status: 'no-session' }); return; }
+            if (!canControl(req, s, body)) { sendJson(res, 403, { error: 'Not allowed' }); return; }
+            sendJson(res, 200, { status: connectZoomAudio(body.sessionCode) });
         });
     }
 
@@ -663,8 +808,11 @@ const server = http.createServer((req, res) => {
     else if (req.method === 'POST' && pathname === '/zoom/pause') {
         readJson(req, (body) => {
             const s = sessions[body.sessionCode];
-            if (s && !s.ended) s.zoomPaused = true;
-            sendJson(res, s ? 200 : 404, { paused: !!s });
+            if (!s || s.ended) { sendJson(res, 404, { paused: false }); return; }
+            if (!canControl(req, s, body)) { sendJson(res, 403, { error: 'Not allowed' }); return; }
+            s.zoomPaused = true;
+            s.zoomWaiting = false;
+            sendJson(res, 200, { paused: true });
         });
     }
 
@@ -673,6 +821,7 @@ const server = http.createServer((req, res) => {
         readJson(req, (body) => {
             const s = sessions[body.sessionCode];
             if (!s || s.ended) { sendJson(res, 404, { error: 'No active session with that code' }); return; }
+            if (!canControl(req, s, body)) { sendJson(res, 403, { error: 'Not allowed' }); return; }
             endSession(body.sessionCode);
             sendJson(res, 200, { ended: true });
         });
@@ -787,7 +936,7 @@ server.listen(PORT, () => {
 
 // ---- WebSockets -------------------------------------------------------------
 //   role=leader   -- the leader's browser streams mic audio up (binary frames)
-//                    and can end the session.
+//                    and can end the session. Needs ?token=<leaderToken>.
 //   role=listener -- receives audio in its language (binary) after sending
 //                    {type:'request_audio'}.
 const wss = new WebSocket.Server({ server });
@@ -800,6 +949,9 @@ wss.on('connection', (ws, req) => {
     if (!session) { ws.close(); return; }
 
     if (role === 'leader') {
+        // Only the browser that started the session can stream audio into it
+        // or end it -- not anyone who knows the session code.
+        if (!safeEqual(params.get('token'), session.leaderToken)) { ws.close(); return; }
         session.leaderSocket = ws;
         const pipelineKey = 'leader-' + sessionCode;
         // A reconnect (tab resume, network blip) cancels a pending teardown,

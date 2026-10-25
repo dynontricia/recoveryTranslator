@@ -4,6 +4,8 @@
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Recovery Translator for Zoom</title>
+    <!-- Filled in by the server from Zoom's signed context: identifies this meeting. -->
+    <meta name="rt-panel-token" content=""/>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html, body { height: 100%; }
@@ -81,7 +83,7 @@
     <div class="status pending" id="status">Loading…</div>
 </div>
 
-<!-- A session started in the browser appeared while the form is open -->
+<!-- A session was started in this meeting (e.g., by a co-host) while the form is open -->
 <div class="banner" id="browser-session-banner" style="display:none">
     <span id="browser-session-text"></span>
     <button class="btn-primary" onclick="useBrowserSession()">Use it</button>
@@ -101,9 +103,17 @@
         <option value="audio_both">English text &amp; audio · Spanish text &amp; audio</option>
     </select>
 
-    <p class="hint">Audio comes from this Zoom meeting. You can also start a session in the browser
-        and choose "A Zoom meeting" as the audio source — it will show up here.</p>
+    <p class="hint">Audio comes from this Zoom meeting.</p>
     <button type="submit" class="btn-primary" id="create-btn">Start session</button>
+</form>
+
+<!-- Link a session started in the browser to this meeting -->
+<form id="link-form" style="display:none" onsubmit="event.preventDefault(); linkBrowserSession();">
+    <h2>Started a session in the browser?</h2>
+    <label for="link-code">Zoom link code</label>
+    <input type="text" id="link-code" maxlength="6" autocomplete="off" oninput="this.value = this.value.toUpperCase()"/>
+    <p class="hint">The leader screen shows this code when "A Zoom meeting" is the audio source.</p>
+    <button type="submit" class="btn-primary" id="link-btn">Link to this meeting</button>
 </form>
 
 <!-- Running session -->
@@ -152,12 +162,28 @@
     let display = 'english';
     let enSource = null, esSource = null;
     let lookTimer = null, audioTimer = null;
-    let pendingBrowserSession = null;
+    let pendingSession = null;
+    // Proves to the server which meeting this panel is in (see server.js).
+    const PANEL_TOKEN = document.querySelector('meta[name="rt-panel-token"]').content;
     let captionsWereRunning = false;
     let textSize = 17;
     try { textSize = parseInt(localStorage.getItem('rt-panel-text-size'), 10) || 17; } catch (e) {}
 
     const $ = id => document.getElementById(id);
+
+    // Every call to our server carries the panel token.
+    async function api(path, body) {
+        const opts = { headers: { 'X-Panel-Token': PANEL_TOKEN } };
+        if (body !== undefined) {
+            opts.method = 'POST';
+            opts.headers['Content-Type'] = 'application/json';
+            opts.body = JSON.stringify(body);
+        }
+        const res = await fetch(path, opts);
+        let data = {};
+        try { data = await res.json(); } catch (e) {}
+        return { ok: res.ok, status: res.status, data };
+    }
 
     function setStatus(cls, text) {
         $('status').className = 'status ' + cls;
@@ -191,6 +217,11 @@
             setStatus('err', 'This page runs inside a Zoom meeting. Open it from Apps → Recovery Translator.');
             return;
         }
+        if (!PANEL_TOKEN) {
+            log('No meeting context from Zoom');
+            setStatus('err', 'Open Recovery Translator from Apps inside a meeting.');
+            return;
+        }
         applyTextSize();
         // Remember the access code between meetings.
         try { $('access-code').value = localStorage.getItem('rt-access-code') || ''; } catch (e) {}
@@ -202,8 +233,7 @@
 
     async function fetchCurrentSession() {
         try {
-            const res = await fetch('/zoom/current-session');
-            const data = await res.json();
+            const { data } = await api('/zoom/current-session');
             return data.sessionCode ? data : null;
         } catch (err) {
             log('Session lookup failed: ' + err.message);
@@ -219,22 +249,45 @@
         $('session-view').style.display = 'none';
         $('captions').style.display = 'none';
         $('start-form').style.display = '';
+        $('link-form').style.display = '';
         $('create-btn').disabled = false;
-        setStatus('pending', 'No session yet. Start one here, or from the browser.');
+        $('link-btn').disabled = false;
+        setStatus('pending', 'No session yet. Start one here, or link one from the browser.');
         clearInterval(lookTimer);
         lookTimer = setInterval(async () => {
             const s = await fetchCurrentSession();
             // Offer it rather than switching -- don't wipe out what's being typed.
             if (s && !sessionCode) {
-                pendingBrowserSession = s;
-                $('browser-session-text').textContent = `Session ${s.sessionCode} was started in the browser.`;
+                pendingSession = s;
+                $('browser-session-text').textContent = `Session ${s.sessionCode} is running in this meeting.`;
                 $('browser-session-banner').style.display = '';
             }
         }, 3000);
     }
 
     function useBrowserSession() {
-        if (pendingBrowserSession) showSession(pendingBrowserSession);
+        if (pendingSession) showSession(pendingSession);
+    }
+
+    async function linkBrowserSession() {
+        const linkCode = $('link-code').value.trim();
+        if (!linkCode) return;
+        $('link-btn').disabled = true;
+        try {
+            const { ok, data } = await api('/zoom/link', { linkCode });
+            if (!ok) {
+                setStatus('err', data.error || 'Could not link that session.');
+                $('link-btn').disabled = false;
+                return;
+            }
+            log(`Linked session ${data.sessionCode} to this meeting`);
+            $('link-code').value = '';
+            showSession(data);
+            if (!data.audioConnected) startCaptions();
+        } catch (err) {
+            setStatus('err', 'Could not link the session: ' + err.message);
+            $('link-btn').disabled = false;
+        }
     }
 
     async function createSessionFromZoom() {
@@ -244,12 +297,8 @@
         $('create-btn').disabled = true;
         setStatus('pending', 'Starting session…');
         try {
-            const res = await fetch('/session/create', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ accessCode, mode, audioSource: 'zoom' })
-            });
-            const data = await res.json();
-            if (!res.ok) {
+            const { ok, data } = await api('/session/create', { accessCode, mode, audioSource: 'zoom' });
+            if (!ok) {
                 setStatus('err', data.error || 'Could not start the session.');
                 $('create-btn').disabled = false;
                 return;
@@ -270,7 +319,8 @@
         clearInterval(lookTimer);
         $('browser-session-banner').style.display = 'none';
         $('start-form').style.display = 'none';
-        pendingBrowserSession = null;
+        $('link-form').style.display = 'none';
+        pendingSession = null;
         unsubscribe();
         sessionCode = data.sessionCode;
         log(`Session ${sessionCode}`);
@@ -291,12 +341,8 @@
         $('start-btn').disabled = true;
         try {
             // Make sure the server is ready to connect this session to Zoom's audio.
-            const res = await fetch('/zoom/connect', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionCode })
-            });
-            const data = await res.json();
-            log('Connect: ' + data.status);
+            const { data } = await api('/zoom/connect', { sessionCode });
+            log('Connect: ' + (data.status || data.error));
             if (data.status === 'no-session') {
                 setStatus('err', 'That session has ended.');
                 showForm();
@@ -341,10 +387,7 @@
     async function stopCaptions() {
         // Tell the server this is a pause, so the session stays open.
         try {
-            await fetch('/zoom/pause', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionCode })
-            });
+            await api('/zoom/pause', { sessionCode });
         } catch (err) {
             log('Pause failed: ' + err.message);
         }
@@ -359,10 +402,7 @@
     async function endSessionFromZoom() {
         if (!sessionCode || !confirm(`End session ${sessionCode} for everyone?`)) return;
         try {
-            await fetch('/zoom/end-session', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionCode })
-            });
+            await api('/zoom/end-session', { sessionCode });
             log(`Session ${sessionCode} ended`);
         } catch (err) {
             log('End failed: ' + err.message);

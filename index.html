@@ -186,8 +186,9 @@
             </div>
 
             <p class="small" id="zoom-fields-hint" style="display:none;text-align:left;margin:-6px 0 16px">
-                After you start, open <strong>Apps → Recovery Translator</strong> in your Zoom meeting and tap
-                <strong>Start captions</strong>. Captions begin as soon as Zoom's audio connects.
+                After you start, you'll get a Zoom link code. In your meeting, open
+                <strong>Apps → Recovery Translator</strong> and enter it under <strong>Started a session in the browser?</strong>
+                Captions begin as soon as Zoom's audio connects.
             </p>
 
             <p class="small" style="margin-top:4px;margin-bottom:20px;text-align:left">
@@ -213,6 +214,12 @@
                     <button class="link-btn" onclick="openTranscript()">Pop out captions-only window &#8599;</button>
 
                     <hr class="divider"/>
+
+                    <div id="zoom-link" style="display:none;text-align:left;margin-bottom:12px">
+                        <div class="small" style="text-align:left;margin:0">Zoom link code</div>
+                        <div id="zoom-link-code" style="font-size:28px;font-weight:800;letter-spacing:4px;color:#2d3748"></div>
+                        <div class="small" style="text-align:left;margin:0">In your meeting, open <strong>Apps → Recovery Translator</strong> and enter this code. Keep it private: it's not the code listeners use.</div>
+                    </div>
 
                     <div class="small" id="leader-audio-status" style="text-align:left">Microphone: starting…</div>
                     <div class="meter" style="height:8px;background:#e2e8f0;border-radius:4px;margin:8px 0 4px;overflow:hidden">
@@ -400,6 +407,7 @@
 
     // ── Shared state ─────────────────────────────────────
     let sessionCode = null, listenerLanguage = null, currentRole = null;
+    let leaderToken = null; // proves to the server that this browser started the session
     let signalingWs = null, eventSource = null;
     let sessionAudioSource = 'device'; // 'device' | 'zoom'
     let zoomStatusTimer = null;
@@ -500,12 +508,13 @@
             const data = await res.json();
             if (!res.ok) { showError('leader-error', data.error || 'Failed to create session.'); return; }
             sessionCode = data.sessionCode;
+            leaderToken = data.leaderToken;
             sessionAudioSource = audioSource;
-            await startLeaderSession(sessionCode);
+            await startLeaderSession(sessionCode, data.linkCode);
         } catch (err) { showError('leader-error', 'Could not start the session: ' + err.message); }
     }
 
-    async function startLeaderSession(code) {
+    async function startLeaderSession(code, linkCode) {
         currentRole = 'leader'; sessionCode = code;
         document.getElementById('display-code').textContent = code;
         const url = `${location.origin}?join=${code}`;
@@ -523,6 +532,8 @@
         // Zoom sessions get their audio from Zoom (RTMS), not this computer.
         const zoom = sessionAudioSource === 'zoom';
         document.getElementById('leader-level').parentElement.style.display = zoom ? 'none' : '';
+        document.getElementById('zoom-link').style.display = zoom && linkCode ? '' : 'none';
+        document.getElementById('zoom-link-code').textContent = linkCode || '';
         if (zoom) {
             watchZoomAudio(code);
             return;
@@ -537,13 +548,14 @@
     // Shows whether Zoom's audio is reaching the server for this session.
     function watchZoomAudio(code) {
         let wasConnected = false;
-        setLeaderAudioStatus('Waiting for Zoom audio — in your meeting open Apps → Recovery Translator → Start captions.');
+        setLeaderAudioStatus('Waiting for Zoom audio — enter the link code in the Zoom app in your meeting.');
         const check = async () => {
             try {
                 const res = await fetch(`/zoom/session-status?code=${code}`);
                 const data = await res.json();
                 if (data.audioConnected) {
                     setLeaderAudioStatus('Zoom audio connected.');
+                    document.getElementById('zoom-link').style.display = 'none';
                 } else if (wasConnected) {
                     setLeaderAudioStatus('Zoom audio stopped — tap Start captions in the Zoom app to resume.', true);
                 }
@@ -569,7 +581,7 @@
     }
 
     function openLeaderSignaling(code) {
-        signalingWs = new WebSocket(wsUrl(`session=${code}&role=leader`));
+        signalingWs = new WebSocket(wsUrl(`session=${code}&role=leader&token=${encodeURIComponent(leaderToken)}`));
         signalingWs.binaryType = 'arraybuffer';
         signalingWs.onclose = () => {
             // The server keeps the pipeline alive for 60s, so reconnecting
@@ -639,6 +651,7 @@
 
     function teardownLeader() {
         leaderLive = false; // stops the auto-reconnect
+        document.getElementById('zoom-link').style.display = 'none';
         if (zoomStatusTimer) { clearInterval(zoomStatusTimer); zoomStatusTimer = null; }
         if (signalingWs) { signalingWs.onclose = null; signalingWs.close(); signalingWs = null; }
         if (captureCtx) { captureCtx.close(); captureCtx = null; }
