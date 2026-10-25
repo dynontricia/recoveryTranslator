@@ -1,0 +1,185 @@
+{
+  "display_information" : {
+    "display_name" : "Recovery Translator",
+    "description": "Live captions and spoken translation in English, Spanish, Polish, and French for recovery meetings.",
+    "long_description": "<p>Recovery Translator gives your Zoom meeting live captions in English, Spanish, Polish, and French, whatever language someone speaks, plus an optional spoken translation participants can listen to on their own phone.</p><p><br /></p><p>Built by and for the recovery community, it&#39;s designed for recovery meetings, area committees, and service assemblies where people who speak different languages share the same room or the same call.</p><p><br /></p><p>HOW IT WORKS</p><p>- Open Recovery Translator from the Apps button in your meeting, choose the languages your meeting needs, and start a session.</p><p>- Captions appear in the app panel within seconds, in one or more languages.</p><p>- Post the join link to the meeting chat with one tap. Participants open it on any phone or computer, with no account or download, and pick their language.</p><p>- Listeners can tap to hear a live spoken translation in the languages the host turned audio on for.</p><p>- Pause captions for part of the meeting, or end the session at any time.</p><p><br /></p><p>PRIVACY FIRST</p><p>- No accounts, names, or emails are collected from participants.</p><p>- Audio, captions, and translations are never stored.</p><p>- Translation uses Google&#39;s Gemini API on the paid tier, which does not use the audio to improve Google&#39;s products.</p><p>- A group that saves its own Gemini key gets it stored encrypted, and removing the app deletes it.</p><p><br /></p><p>To start sessions, use an access code (request one through the Support page) or save your group&#39;s own Gemini API key, from a Google project with billing turned on, in the app&#39;s Settings.</p>",
+    "company_name" : "T&J Consulting, LLC.",
+    "discover_type" : "UNLISTED",
+    "install_type" : "APP_DIRECTORY",
+    "marketplace_categories" : [
+      "transcription-translation"
+    ],
+    "industry_vertical" : "other",
+    "privacy_url" : "https://app.recoverytranslator.com/privacy",
+    "terms_url" : "https://app.recoverytranslator.com/terms",
+    "support_url" : "https://app.recoverytranslator.com/support",
+    "doc_url" : "https://app.recoverytranslator.com/docs"
+  },
+  "oauth_information" : {
+    "usage" : "USER_OPERATION",
+    "development_redirect_uri" : "https://dev.recoverytranslator.com/zoom/oauth/callback",
+    "production_redirect_uri" : "https://app.recoverytranslator.com/zoom/oauth/callback",
+    "oauth_allow_list" : [
+      "https://app.recoverytranslator.com/zoom/oauth/callback",
+      "https://www.recoverytranslator.com/zoom/oauth/callback",
+      "https://dev.recoverytranslator.com/zoom/oauth/callback"
+    ],
+    "strict_mode" : false,
+    "subdomain_strict_mode" : false,
+    "scopes" : [
+      {
+        "scope" : "meeting:read:meeting_audio",
+        "optional" : false
+      },
+      {
+        "scope" : "zoomapp:inmeeting",
+        "optional" : false
+      },
+      {
+        "scope" : "rtms:read:rtms_stopped",
+        "optional" : false
+      },
+      {
+        "scope" : "rtms:read:rtms_started",
+        "optional" : false
+      },
+      {
+        "scope" : "meeting:read:token",
+        "optional" : false
+      },
+      {
+        "scope" : "meeting:read:participant_data_connection",
+        "optional" : false
+      }
+    ],
+    "scope_description": "The app runs in the meeting side panel for the host. With the host's permission it receives the meeting's real-time audio stream (RTMS), sends it to Google Gemini for live translation, and shows captions and spoken translation in the languages the host chooses. Audio, captions, and translations are not stored."
+  },
+  "developer_information" : {
+    "contact_details" : [
+      {
+        "contact_name" : "Tricia Dynon",
+        "contact_email" : "info@recoverytranslator.com",
+        "role" : "Developer"
+      }
+    ]
+  },
+  "features" : {
+    "products" : [
+      "ZOOM_CHAT",
+      "ZOOM_MEETING"
+    ],
+    "development_home_uri" : "https://dev.recoverytranslator.com/zoom-app",
+    "production_home_uri" : "https://app.recoverytranslator.com/zoom-app",
+    "domain_allow_list" : [
+      {
+        "domain" : "appssdk.zoom.us",
+        "explanation": "Zoom Apps SDK"
+      },
+      {
+        "domain": "app.recoverytranslator.com",
+        "explanation": "App home page, documentation opened with openUrl"
+      },
+      {
+        "domain": "dev.recoverytranslator.com",
+        "explanation": "Development environment"
+      }
+    ],
+    "in_client_feature" : {
+      "zoom_app_api" : {
+        "enable" : true,
+        "zoom_app_apis" : [
+          "getRTMSStatus",
+          "onRTMSStatusChange",
+          "openUrl",
+          "pauseRTMS",
+          "resumeRTMS",
+          "sendMessageToChat",
+          "startRTMS",
+          "stopRTMS"
+        ]
+      },
+      "guest_mode" : {
+        "enable" : true,
+        "enable_test_guest_mode" : true
+      },
+      "in_client_oauth" : {
+        "enable" : false
+      },
+      "collaborate_mode" : {
+        "enable": false,
+        "enable_screen_sharing": false,
+        "enable_play_together" : false,
+        "enable_start_immediately": false,
+        "enable_join_immediately" : false
+      },
+      "team_chat_tab" : {
+        "enable_home_tab" : false,
+        "enable_channel_tab" : false
+      },
+      "waiting_room" : {
+        "enable" : false
+      }
+    },
+    "zoom_client_support" : {
+      "mobile" : {
+        "enable" : false
+      },
+      "zoom_room" : {
+        "enable" : false,
+        "enable_personal_zoom_room" : false,
+        "enable_shared_zoom_room" : false,
+        "enable_digital_signage" : false,
+        "enable_zoom_rooms_controller" : false
+      },
+      "pwa_client" : {
+        "enable" : false
+      }
+    },
+    "embed" : {
+      "meeting_sdk" : {
+        "enable" : false,
+        "enable_device" : false,
+        "devices" : [ ]
+      },
+      "contact_center_sdk" : {
+        "enable" : false
+      },
+      "phone_sdk" : {
+        "enable" : false
+      }
+    },
+    "team_chat_subscription" : {
+      "enable" : false,
+      "shortcuts" : [ ]
+    },
+    "event_subscription" : {
+      "enable" : true,
+      "events" : [
+        {
+          "subscription_id" : "OARR37RARKSDxep1C0PfQQ",
+          "subscription_name" : "RealtimeEvents",
+          "event_types" : [
+            "meeting.rtms_started",
+            "meeting.rtms_stopped"
+          ],
+          "development_webhook_url" : "https://dev.recoverytranslator.com/zoom/rtms-webhook",
+          "production_webhook_url" : "https://app.recoverytranslator.com/zoom/rtms-webhook",
+          "event_usage" : "EVENT_FOR_USER",
+          "communicate_type" : "WEB_HOOK"
+        }
+      ]
+    },
+    "custom_form" : {
+      "enable" : false
+    },
+    "marketplace_actions" : {
+      "enable" : false
+    },
+    "marketplace_triggers" : {
+      "enable" : false
+    },
+    "plugin_sdk" : {
+      "enable" : false
+    }
+  }
+}
