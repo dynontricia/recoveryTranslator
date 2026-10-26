@@ -210,6 +210,7 @@
     const sdk = window.zoomSdk;
     let sessionCode = null;
     let sessionLanguages = ['en'];   // the session's caption languages
+    let joinUrl = '';                // the group's permanent link, or this session's code link
     let shown = [];                  // which of them show in this panel
     let boxes = {};                  // lang -> { wrap, box, source }
     let lookTimer = null, audioTimer = null;
@@ -478,7 +479,7 @@
                 return;
             }
             if (accessCode) { try { localStorage.setItem('rt-access-code', accessCode); } catch (e) {} }
-            showSession({ sessionCode: data.sessionCode, languages: data.languages, audioConnected: data.zoomAudio === 'connected' });
+            showSession({ sessionCode: data.sessionCode, languages: data.languages, joinPath: data.joinPath, audioConnected: data.zoomAudio === 'connected' });
             // Starting a session from Zoom means "caption this meeting now".
             if (data.zoomAudio !== 'connected') startCaptions();
         } catch (err) {
@@ -507,7 +508,7 @@
             : enEs.length ? enEs : [sessionLanguages[0]];
         buildLanguageToggles();
 
-        const joinUrl = `${location.origin}?join=${sessionCode}`;
+        joinUrl = location.origin + (data.joinPath || `/?join=${sessionCode}`);
         // A plain link can't leave the Zoom panel; open it through Zoom instead.
         $('join-info').innerHTML = `Session <strong>${sessionCode}</strong> · listeners join at <a href="${joinUrl}" id="join-link">${joinUrl}</a>`;
         $('join-link').addEventListener('click', (e) => { e.preventDefault(); openExternal(joinUrl); });
@@ -549,7 +550,6 @@
     // chat API can't attach an image, so the QR code can't go in chat.
     async function postLinkToChat() {
         if (!sessionCode) return;
-        const joinUrl = `${location.origin}?join=${sessionCode}`;
         // One line per session language, in that language.
         const message = sessionLanguages.map(l => `${LANGUAGES[l].chat}: ${joinUrl}`).join('\n');
         const btn = $('chat-link-btn');

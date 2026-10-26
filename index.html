@@ -37,6 +37,7 @@
             cursor: pointer; margin-bottom: 12px; transition: opacity 0.2s;
         }
         .btn:hover { opacity: 0.88; }
+        .btn:disabled, .btn:disabled:hover { opacity: 0.45; cursor: not-allowed; }
         .btn-primary { background: #4f46e5; color: white; }
         .btn-secondary { background: #e2e8f0; color: #1a202c; }
         .btn-danger { background: #e53e3e; color: white; }
@@ -239,9 +240,10 @@
     <!-- SCREEN 4: Listener onboarding -->
     <div class="screen" id="screen-listener-onboard">
         <div class="card">
-            <h2>Join a session</h2>
+            <h2 id="listener-title">Join a session</h2>
             <div class="error" id="listener-error"></div>
-            <label>Session code</label>
+            <p class="small" id="link-status" style="display:none;text-align:left"></p>
+            <label id="session-code-label">Session code</label>
             <input type="text" id="session-code-input" placeholder="ABC123" maxlength="6"
                    oninput="this.value = this.value.toUpperCase(); if (this.value.length === 6) loadSessionLanguages(this.value);"/>
             <label>Preferred language</label>
@@ -508,14 +510,15 @@
             leaderToken = data.leaderToken;
             sessionLanguages = data.languages || choice.languages;
             sessionAudioSource = audioSource;
-            await startLeaderSession(sessionCode, data.linkCode);
+            await startLeaderSession(sessionCode, data.linkCode, data.joinPath);
         } catch (err) { showError('leader-error', 'Could not start the session: ' + err.message); }
     }
 
-    async function startLeaderSession(code, linkCode) {
+    async function startLeaderSession(code, linkCode, joinPath) {
         currentRole = 'leader'; sessionCode = code;
         document.getElementById('display-code').textContent = code;
-        const url = `${location.origin}?join=${code}`;
+        // The group's permanent link (/area61) if it has one, else this session's code link.
+        const url = location.origin + (joinPath || `/?join=${code}`);
         document.getElementById('display-url').textContent = url;
         document.getElementById('qr-container').innerHTML = '';
         new QRCode(document.getElementById('qr-container'), { text: url, width: 180, height: 180 });
@@ -664,6 +667,36 @@
     }
 
     // ── LISTENER ─────────────────────────────────────────
+    // A group's permanent link: find the group's live session and fill it in.
+    // Between meetings, wait here and connect when the next session starts.
+    let linkTimer = null;
+    async function openGroupLink(slug) {
+        show('screen-listener-onboard');
+        document.getElementById('session-code-label').style.display = 'none';
+        document.getElementById('session-code-input').style.display = 'none';
+        const status = document.getElementById('link-status');
+        const joinBtn = document.querySelector('#screen-listener-onboard .btn-primary');
+        const check = async () => {
+            let info;
+            try { info = await (await fetch(`/link/${slug}`)).json(); } catch (e) { return; }
+            document.getElementById('listener-title').textContent = `Join ${info.label || 'the meeting'}`;
+            if (info.sessionCode) {
+                clearInterval(linkTimer);
+                status.style.display = 'none';
+                joinBtn.disabled = false;
+                document.getElementById('session-code-input').value = info.sessionCode;
+                loadSessionLanguages(info.sessionCode);
+            } else {
+                status.textContent = "Captions aren't on yet. Keep this page open; it connects as soon as they start.";
+                document.getElementById('listener-language').innerHTML = '<option value="">Available when captions start</option>';
+                status.style.display = '';
+                joinBtn.disabled = true;
+            }
+        };
+        await check();
+        if (!document.getElementById('session-code-input').value) linkTimer = setInterval(check, 5000);
+    }
+
     // Fills the language list with the languages this session offers.
     async function loadSessionLanguages(code) {
         const select = document.getElementById('listener-language');
@@ -858,6 +891,9 @@
     window.addEventListener('load', () => {
         const urlParams = new URLSearchParams(location.search);
         renderLanguagePicker(document.getElementById('lang-picker'));
+        // A group's permanent link, e.g. /area61.
+        const slug = location.pathname.match(/^\/([a-z0-9-]{3,32})$/i);
+        if (slug) { openGroupLink(slug[1].toLowerCase()); return; }
         if (urlParams.has('join')) {
             const code = urlParams.get('join').toUpperCase();
             document.getElementById('session-code-input').value = code;

@@ -14,6 +14,8 @@
 //                     never stored.
 //   geminiKey      -- the group's Gemini API key, encrypted (AES-256-GCM).
 //                     null means "use the server's own key" (codes you issue).
+//   slug           -- optional permanent link name, e.g. "area61" for
+//                     app.recoverytranslator.com/area61. Set only by the admin.
 //
 // Both secrets come from KEY_ENCRYPTION_KEY (32 random bytes, base64), kept
 // in a Railway variable -- never in the store file -- so a copy of the file
@@ -97,7 +99,8 @@ function describe(g) {
         fromZoomApp: !!g.zoomUserHash,
         hasAccessCode: !!g.accessCodeHash,
         usesOwnKey: !!g.geminiKey,
-        keyHint: g.keyHint || null
+        keyHint: g.keyHint || null,
+        slug: g.slug || null
     };
 }
 
@@ -128,6 +131,29 @@ function findByZoomUser(uid) {
 }
 
 function keyHint(key) { return '…' + key.slice(-4); }
+
+// Permanent link names: 3-32 lowercase letters, digits, or dashes.
+const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])$/;
+function normalizeSlug(slug) { return String(slug || '').trim().toLowerCase(); }
+
+function findBySlug(slug) {
+    const s = normalizeSlug(slug);
+    return s ? data.groups.find(g => g.active && g.slug === s) || null : null;
+}
+
+// Sets (or, with an empty slug, removes) a group's link name. Returns
+// { group } or { error }. The caller rules out names its own pages use.
+function setSlug(id, slug) {
+    const g = data.groups.find(x => x.id === id);
+    if (!g) return { error: 'No such group' };
+    const s = normalizeSlug(slug);
+    if (!s) { g.slug = null; save(); return { group: describe(g) }; }
+    if (!SLUG_PATTERN.test(s)) return { error: 'Use 3-32 lowercase letters, numbers, or dashes.' };
+    if (data.groups.some(x => x.id !== id && x.slug === s)) return { error: 'Another group already has that link.' };
+    g.slug = s;
+    save();
+    return { group: describe(g) };
+}
 
 // From the Zoom app's Settings screen: save (or replace) this Zoom user's
 // key. A new website access code comes back the first time; it's only ever
@@ -201,7 +227,7 @@ function remove(id) {
 }
 
 module.exports = {
-    STORE_PATH, enabled, describe, geminiKeyFor,
+    STORE_PATH, enabled, describe, geminiKeyFor, findBySlug, setSlug, normalizeSlug,
     findByAccessCode, findByZoomUser, saveZoomGroup, createCodeGroup,
     deleteByZoomUser, list, setActive, remove
 };
