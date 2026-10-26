@@ -605,10 +605,14 @@ function readZoomAppContext(req) {
     }
 }
 
-// Panel tokens: base64url(JSON {uid, mid, exp}) + "." + HMAC. The signing
-// key is made fresh at startup -- a restart clears all sessions anyway, and
-// reopening the panel gets a new token.
-const PANEL_TOKEN_KEY = crypto.randomBytes(32);
+// Panel tokens: base64url(JSON {uid, mid, role, exp}) + "." + HMAC. The
+// signing key is derived from the Zoom client secret, so it stays the same
+// across restarts and deploys: a panel left open through a deploy keeps
+// working. (Without a client secret there are no panels anyway; a random key
+// is then fine.)
+const PANEL_TOKEN_KEY = process.env.ZOOM_CLIENT_SECRET
+    ? Buffer.from(crypto.hkdfSync('sha256', process.env.ZOOM_CLIENT_SECRET, Buffer.alloc(0), 'rt-panel-token', 32))
+    : crypto.randomBytes(32);
 const PANEL_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 
 function signPanelToken(uid, mid, role) {
@@ -863,8 +867,8 @@ const server = http.createServer((req, res) => {
         serveFile(req, res, path.join(__dirname, file), contentType, headers);
     }
 
-    // The Zoom panel. Zoom's signed context header says who and which meeting;
-    // the page gets a panel token for it. Opened outside a Zoom meeting, the
+        // The Zoom panel. Zoom's signed context header says who and which meeting;
+        // the page gets a panel token for it. Opened outside a Zoom meeting, the
     // token is empty and the panel says to open it from inside one.
     else if ((req.method === 'GET' || req.method === 'HEAD') && (pathname === '/zoom-app' || pathname === '/zoom-app.html')) {
         const ctx = readZoomAppContext(req);
@@ -882,7 +886,7 @@ const server = http.createServer((req, res) => {
             // checks it again from the signed token on every call.
             res.end(req.method === 'HEAD' ? undefined
                 : html.replace('<meta name="rt-panel-token" content=""/>', `<meta name="rt-panel-token" content="${token}"/>`)
-                      .replace('<meta name="rt-panel-role" content=""/>', `<meta name="rt-panel-role" content="${role}"/>`));
+                    .replace('<meta name="rt-panel-role" content=""/>', `<meta name="rt-panel-role" content="${role}"/>`));
         });
     }
 
@@ -932,7 +936,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // The Zoom panel's Settings screen: this Zoom user's saved settings.
+        // The Zoom panel's Settings screen: this Zoom user's saved settings.
     // Never returns the key itself -- only its last four characters.
     else if (req.method === 'GET' && pathname === '/zoom/config') {
         const panel = requireHostPanel(req, res, 'change settings');
@@ -945,7 +949,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Saves (or replaces) this Zoom user's Gemini key, after Google confirms
+        // Saves (or replaces) this Zoom user's Gemini key, after Google confirms
     // it works. The first save also returns a website access code -- once.
     else if (req.method === 'POST' && pathname === '/zoom/config') {
         readJson(req, async (body) => {
@@ -1001,7 +1005,7 @@ const server = http.createServer((req, res) => {
         }
     }
 
-    // Which session the Zoom panel should show: only its own meeting's.
+        // Which session the Zoom panel should show: only its own meeting's.
     // Hosts and viewers alike -- viewers watch the same session's captions.
     else if (req.method === 'GET' && pathname === '/zoom/current-session') {
         const panel = readPanelToken(req);
@@ -1010,7 +1014,7 @@ const server = http.createServer((req, res) => {
         sendJson(res, 200, code ? sessionSummary(code) : { sessionCode: null });
     }
 
-    // Links a session started in the browser to the meeting whose panel sent
+        // Links a session started in the browser to the meeting whose panel sent
     // the one-time link code the browser showed its leader.
     else if (req.method === 'POST' && pathname === '/zoom/link') {
         readJson(req, (body) => {
@@ -1028,8 +1032,8 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Public facts about a session: whether it's live, its languages (for the
-    // listener's language list and the display columns), and whether audio is
+        // Public facts about a session: whether it's live, its languages (for the
+        // listener's language list and the display columns), and whether audio is
     // flowing. Nothing here needs more than the session code.
     else if (req.method === 'GET' && (pathname === '/session/info' || pathname === '/zoom/session-status')) {
         const code = String(parsedUrl.searchParams.get('code') || '').toUpperCase();
@@ -1043,7 +1047,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Panel's "Start captions": claim Zoom audio for this session (now, or
+        // Panel's "Start captions": claim Zoom audio for this session (now, or
     // as soon as the stream starts).
     else if (req.method === 'POST' && pathname === '/zoom/connect') {
         readJson(req, (body) => {
@@ -1054,7 +1058,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Panel's "Stop captions": the stream stopping next is a pause, so the
+        // Panel's "Stop captions": the stream stopping next is a pause, so the
     // session stays open for listeners.
     else if (req.method === 'POST' && pathname === '/zoom/pause') {
         readJson(req, (body) => {
@@ -1078,13 +1082,13 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // Zoom RTMS webhook:
-    //   endpoint.url_validation -- Zoom's challenge when the URL is saved in
-    //     the Zoom console; we echo back an HMAC-signed token.
-    //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
-    //     meeting's audio stream.
-    //   app_deauthorized -- someone removed the app; delete their settings.
-    //     Also accepted at /zoom/deauthorize, for Zoom's separate
+        // Zoom RTMS webhook:
+        //   endpoint.url_validation -- Zoom's challenge when the URL is saved in
+        //     the Zoom console; we echo back an HMAC-signed token.
+        //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
+        //     meeting's audio stream.
+        //   app_deauthorized -- someone removed the app; delete their settings.
+        //     Also accepted at /zoom/deauthorize, for Zoom's separate
     //     "Deauthorization Notification Endpoint" field.
     else if (req.method === 'POST' && (pathname === '/zoom/rtms-webhook' || pathname === '/zoom/deauthorize')) {
         readRawBody(req, (rawBody) => {
@@ -1138,8 +1142,8 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // OAuth redirect target. Zoom sends the user here (with a one-time
-    // ?code=...) after they click Allow on the app's consent screen. This URL
+        // OAuth redirect target. Zoom sends the user here (with a one-time
+        // ?code=...) after they click Allow on the app's consent screen. This URL
     // must match the redirect URI registered in the Zoom console.
     else if (req.method === 'GET' && pathname === '/zoom/oauth/callback') {
         const code = parsedUrl.searchParams.get('code');

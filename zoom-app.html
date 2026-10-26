@@ -180,7 +180,7 @@
         <div class="row host-only">
             <button class="btn-start" id="start-btn" onclick="startCaptions()">Start captions</button>
             <button class="btn-stop" id="stop-btn" onclick="stopCaptions()" disabled>Pause</button>
-            <button class="btn-end" onclick="endSessionFromZoom()">End session</button>
+            <button class="btn-end" id="end-btn" onclick="endSessionFromZoom()">End session</button>
         </div>
         <!-- One button per session language: which caption boxes show here -->
         <div class="row toggle" id="display-toggle"></div>
@@ -252,8 +252,9 @@
     // If Zoom can't open it -- openUrl not enabled, an error, or no answer
     // within a few seconds -- the address shows in the panel instead, so the
     // button never silently does nothing.
-    async function openDocs(path) {
-        const url = location.origin + path;
+    async function openDocs(path) { return openExternal(location.origin + path); }
+
+    async function openExternal(url) {
         const showAddress = () => {
             setStatus('pending', 'Open this in your browser: ' + url);
         };
@@ -375,7 +376,7 @@
         }
     }
     async function removeSettings() {
-        if (!confirm('Remove your saved Gemini key and website access code?')) return;
+        if (!confirmTap($('remove-key-btn'), 'Remove saved key', 'Tap again to remove')) return;
         try {
             await api('/zoom/config/delete', {});
             config = { storeEnabled: config.storeEnabled, configured: false, group: null };
@@ -497,15 +498,19 @@
         sessionCode = data.sessionCode;
         sessionLanguages = data.languages && data.languages.length ? data.languages : ['en'];
         // Start with English if the session has it, else its first language.
-        // Start with the viewer's own language if the session has it, then
-        // English, then the session's first language.
+        // Show English and Spanish to start (whichever the session has). A
+        // viewer whose own language is in the session but isn't one of those
+        // (Polish, French) starts on their own language instead.
         const own = (navigator.language || '').slice(0, 2);
-        shown = [sessionLanguages.includes(own) && !IS_HOST ? own
-            : sessionLanguages.includes('en') ? 'en' : sessionLanguages[0]];
+        const enEs = sessionLanguages.filter(l => l === 'en' || l === 'es');
+        shown = !IS_HOST && sessionLanguages.includes(own) && !enEs.includes(own) ? [own]
+            : enEs.length ? enEs : [sessionLanguages[0]];
         buildLanguageToggles();
 
         const joinUrl = `${location.origin}?join=${sessionCode}`;
-        $('join-info').innerHTML = `Session <strong>${sessionCode}</strong> · listeners join at <a href="${joinUrl}" target="_blank">${joinUrl}</a>`;
+        // A plain link can't leave the Zoom panel; open it through Zoom instead.
+        $('join-info').innerHTML = `Session <strong>${sessionCode}</strong> · listeners join at <a href="${joinUrl}" id="join-link">${joinUrl}</a>`;
+        $('join-link').addEventListener('click', (e) => { e.preventDefault(); openExternal(joinUrl); });
         $('session-view').style.display = '';
         $('session-view').open = true;
         $('viewer-wait').style.display = 'none';
@@ -584,13 +589,41 @@
         } catch (err) { /* already stopped */ }
     }
 
+    // Zoom's panel may not show browser dialogs (confirm), so confirming is
+    // a second tap on the same button within 5 seconds.
+    function confirmTap(btn, label, confirmLabel) {
+        if (btn.dataset.armed === '1') {
+            btn.dataset.armed = ''; btn.textContent = label; clearTimeout(btn._disarm);
+            return true;
+        }
+        btn.dataset.armed = '1'; btn.textContent = confirmLabel;
+        btn._disarm = setTimeout(() => { btn.dataset.armed = ''; btn.textContent = label; }, 5000);
+        return false;
+    }
+
     async function endSessionFromZoom() {
-        if (!sessionCode || !confirm(`End session ${sessionCode} for everyone?`)) return;
+        if (!sessionCode) return;
+        if (!confirmTap($('end-btn'), 'End session', 'Tap again to end')) return;
+        let result;
         try {
-            await api('/zoom/end-session', { sessionCode });
-        } catch (err) { /* the panel resets either way */ }
+            result = await api('/zoom/end-session', { sessionCode });
+        } catch (err) {
+            setStatus('err', 'Could not reach the server to end the session: ' + err.message);
+            return;
+        }
+        // 404 means it had already ended -- fine. Anything else: say so, and
+        // keep the session on screen rather than pretending it ended.
+        if (result.status === 401) {
+            setStatus('err', 'This panel lost its connection. Close Recovery Translator and open it again, then tap End session.');
+            return;
+        }
+        if (!result.ok && result.status !== 404) {
+            setStatus('err', 'Could not end the session: ' + (result.data.error || `error ${result.status}`));
+            return;
+        }
         try { await sdk.stopRTMS(); } catch (e) { /* may already be stopped */ }
         showForm();
+        setStatus('ok', 'Session ended.');
     }
 
     // Keeps the status and buttons in step with whether Zoom audio is flowing.
