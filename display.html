@@ -92,9 +92,12 @@
             '<div class="err">No session code. Open this page from the leader screen or add ?session=CODE to the URL.</div>';
     } else {
         document.getElementById('code').textContent = code;
-        const joinUrl = `${location.origin}?join=${code}`;
-        document.getElementById('url').textContent = joinUrl;
-        new QRCode(document.getElementById('qr-container'), { text: joinUrl, width: 150, height: 150 });
+        // QR code and link: the group's permanent link if it has one.
+        function showJoin(path) {
+            const joinUrl = location.origin + (path || `/?join=${code}`);
+            document.getElementById('url').textContent = joinUrl;
+            new QRCode(document.getElementById('qr-container'), { text: joinUrl, width: 150, height: 150 });
+        }
 
         // Font/color controls, applied to every caption column and
         // remembered on this computer so a room's preferred settings stick.
@@ -150,6 +153,7 @@
                     document.getElementById('url').textContent = 'This session is not live.';
                     return;
                 }
+                showJoin(info.joinPath);
                 info.languages.forEach(addColumn);
                 applyStyle();
             });

@@ -35,6 +35,7 @@ const PORT = 3000;
 //   meetingId: string | null,  // the Zoom meeting this session captions
 //   leaderToken,        // secret given only to whoever started the session
 //   geminiKey,          // this session's Gemini key (the group's, or the server's); memory only
+//   groupId, slug,      // the stored group that started it, and its permanent link name (if any)
 //   linkCode: string | null,   // one-time code to link a browser-started session to a meeting
 //   ended: bool,
 //   createdAt
@@ -85,7 +86,7 @@ function safeEqual(a, b) {
 // ever gets that meeting's audio. A Zoom session started in the browser has
 // no meeting yet; it gets a one-time link code the leader types into the
 // panel in their meeting.
-function createSession(choice, audioSource, meetingId, geminiKey) {
+function createSession(choice, audioSource, meetingId, geminiKey, group) {
     let code;
     do { code = randomCode(); } while (sessions[code]);
     const zoom = audioSource === 'zoom';
@@ -99,6 +100,8 @@ function createSession(choice, audioSource, meetingId, geminiKey) {
         meetingId: zoom && meetingId ? meetingId : null,
         leaderToken: crypto.randomBytes(24).toString('hex'),
         geminiKey,
+        groupId: group ? group.id : null,
+        slug: group && group.slug ? group.slug : null,
         linkCode: zoom && !meetingId ? randomCode() : null,
         zoomWaiting: false,
         createdAt: Date.now()
@@ -660,9 +663,34 @@ function canControl(req, session, body) {
     return safeEqual(body && body.leaderToken, session.leaderToken);
 }
 
+// Where listeners join: the group's permanent link if it has one
+// (/area61), otherwise this session's own code (/?join=ABC123).
+function joinPath(code) {
+    const s = sessions[code];
+    return s && s.slug ? `/${s.slug}` : `/?join=${code}`;
+}
+
+// The newest live session started by the group with this link name.
+function liveSessionForSlug(slug) {
+    const g = store.findBySlug(slug);
+    if (!g) return { group: null, code: null };
+    const live = Object.entries(sessions)
+        .filter(([, s]) => !s.ended && s.groupId === g.id)
+        .sort((a, b) => b[1].createdAt - a[1].createdAt)[0];
+    return { group: g, code: live ? live[0] : null };
+}
+
+// Link names can't shadow the app's own pages and endpoints.
+const RESERVED_SLUGS = new Set(['admin', 'api', 'app', 'captions', 'display', 'docs', 'index', 'join', 'languages',
+    'link', 'logo', 'privacy', 'session', 'static', 'stream', 'support', 'terms', 'transcript', 'www', 'zoom', 'zoom-app']);
+function setGroupSlug(id, slug) {
+    if (RESERVED_SLUGS.has(store.normalizeSlug(slug))) return { error: 'That name is used by the app itself. Pick another.' };
+    return store.setSlug(id, slug);
+}
+
 function sessionSummary(code) {
     const s = sessions[code];
-    return { sessionCode: code, languages: s.languages, audio: s.audio, audioConnected: !!findPipelineBySession(code) };
+    return { sessionCode: code, languages: s.languages, audio: s.audio, audioConnected: !!findPipelineBySession(code), joinPath: joinPath(code) };
 }
 
 // ---- Who may start a session, and with which Gemini key ---------------------
@@ -680,16 +708,16 @@ function resolveCredentials(req, body) {
         const g = store.findByAccessCode(code);
         if (g && g.geminiKey) {
             const key = store.geminiKeyFor(g);
-            return key ? { geminiKey: key } : { error: "This group's saved key could not be read. Save it again.", status: 409 };
+            return key ? { geminiKey: key, group: g } : { error: "This group's saved key could not be read. Save it again.", status: 409 };
         }
-        if (g) return { geminiKey: process.env.GEMINI_API_KEY || null };
+        if (g) return { geminiKey: process.env.GEMINI_API_KEY || null, group: g };
         return { error: 'Invalid access code', status: 401 };
     }
     const panel = readHostPanel(req);
     const g = panel && store.findByZoomUser(panel.uid);
     if (g && g.active && g.geminiKey) {
         const key = store.geminiKeyFor(g);
-        if (key) return { geminiKey: key };
+        if (key) return { geminiKey: key, group: g };
         return { error: 'Your saved key could not be read. Save it again in Settings.', status: 409 };
     }
     return { error: 'Enter an access code, or save your Gemini key in Settings.', status: 401 };
@@ -867,8 +895,8 @@ const server = http.createServer((req, res) => {
         serveFile(req, res, path.join(__dirname, file), contentType, headers);
     }
 
-        // The Zoom panel. Zoom's signed context header says who and which meeting;
-        // the page gets a panel token for it. Opened outside a Zoom meeting, the
+    // The Zoom panel. Zoom's signed context header says who and which meeting;
+    // the page gets a panel token for it. Opened outside a Zoom meeting, the
     // token is empty and the panel says to open it from inside one.
     else if ((req.method === 'GET' || req.method === 'HEAD') && (pathname === '/zoom-app' || pathname === '/zoom-app.html')) {
         const ctx = readZoomAppContext(req);
@@ -886,7 +914,7 @@ const server = http.createServer((req, res) => {
             // checks it again from the signed token on every call.
             res.end(req.method === 'HEAD' ? undefined
                 : html.replace('<meta name="rt-panel-token" content=""/>', `<meta name="rt-panel-token" content="${token}"/>`)
-                    .replace('<meta name="rt-panel-role" content=""/>', `<meta name="rt-panel-role" content="${role}"/>`));
+                      .replace('<meta name="rt-panel-role" content=""/>', `<meta name="rt-panel-role" content="${role}"/>`));
         });
     }
 
@@ -907,11 +935,11 @@ const server = http.createServer((req, res) => {
                 sendJson(res, 403, { error: 'Only the host or a co-host can start captions.' });
                 return;
             }
-            const code = createSession(parseLanguageChoice(body), body.audioSource, panel && panel.mid, creds.geminiKey);
+            const code = createSession(parseLanguageChoice(body), body.audioSource, panel && panel.mid, creds.geminiKey, creds.group);
             const s = sessions[code];
             const zoomAudio = s.audioSource === 'zoom' && s.meetingId ? connectZoomAudio(code) : undefined;
             sendJson(res, 200, { sessionCode: code, leaderToken: s.leaderToken, linkCode: s.linkCode, zoomAudio,
-                languages: s.languages, audio: s.audio });
+                languages: s.languages, audio: s.audio, joinPath: joinPath(code) });
         });
     }
 
@@ -936,7 +964,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // The Zoom panel's Settings screen: this Zoom user's saved settings.
+    // The Zoom panel's Settings screen: this Zoom user's saved settings.
     // Never returns the key itself -- only its last four characters.
     else if (req.method === 'GET' && pathname === '/zoom/config') {
         const panel = requireHostPanel(req, res, 'change settings');
@@ -949,7 +977,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Saves (or replaces) this Zoom user's Gemini key, after Google confirms
+    // Saves (or replaces) this Zoom user's Gemini key, after Google confirms
     // it works. The first save also returns a website access code -- once.
     else if (req.method === 'POST' && pathname === '/zoom/config') {
         readJson(req, async (body) => {
@@ -991,8 +1019,24 @@ const server = http.createServer((req, res) => {
                     if (!check.ok) { sendJson(res, 400, { error: check.error }); return; }
                     geminiKey = check.key;
                 }
+                if (body.slug) {
+                    const s = store.normalizeSlug(body.slug);
+                    if (RESERVED_SLUGS.has(s) || store.findBySlug(s) || !/^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])$/.test(s)) {
+                        sendJson(res, 400, { error: 'That link name is taken or not allowed (3-32 lowercase letters, numbers, or dashes).' });
+                        return;
+                    }
+                }
                 const result = store.createCodeGroup({ label: body.label, geminiKey });
-                console.log(`Admin: created group ${result.group.id}`);
+                if (body.slug) result.group = setGroupSlug(result.group.id, body.slug).group;
+                console.log(`Admin: created group ${result.group.id}${result.group.slug ? ` (/${result.group.slug})` : ''}`);
+                sendJson(res, 200, result);
+            });
+        } else if (req.method === 'POST' && parts.length === 4 && parts[3] === 'link') {
+            // Body {"slug":"area61"} sets the permanent link; {"slug":""} removes it.
+            readJson(req, (body) => {
+                const result = setGroupSlug(parts[2], body.slug);
+                if (result.error) { sendJson(res, result.error === 'No such group' ? 404 : 400, result); return; }
+                console.log(`Admin: group ${parts[2]} link -> ${result.group.slug ? '/' + result.group.slug : '(none)'}`);
                 sendJson(res, 200, result);
             });
         } else if (req.method === 'POST' && parts.length === 4 && ['enable', 'disable', 'delete'].includes(parts[3])) {
@@ -1005,7 +1049,15 @@ const server = http.createServer((req, res) => {
         }
     }
 
-        // Which session the Zoom panel should show: only its own meeting's.
+    // A permanent link's current session, for the join page: who it is, and
+    // the live session's code, or null between meetings.
+    else if (req.method === 'GET' && pathname.startsWith('/link/')) {
+        const { group, code } = liveSessionForSlug(pathname.slice('/link/'.length));
+        if (!group) { sendJson(res, 404, { error: 'No such link' }); return; }
+        sendJson(res, 200, { label: group.label, sessionCode: code, languages: code ? sessions[code].languages : [] });
+    }
+
+    // Which session the Zoom panel should show: only its own meeting's.
     // Hosts and viewers alike -- viewers watch the same session's captions.
     else if (req.method === 'GET' && pathname === '/zoom/current-session') {
         const panel = readPanelToken(req);
@@ -1014,7 +1066,7 @@ const server = http.createServer((req, res) => {
         sendJson(res, 200, code ? sessionSummary(code) : { sessionCode: null });
     }
 
-        // Links a session started in the browser to the meeting whose panel sent
+    // Links a session started in the browser to the meeting whose panel sent
     // the one-time link code the browser showed its leader.
     else if (req.method === 'POST' && pathname === '/zoom/link') {
         readJson(req, (body) => {
@@ -1032,8 +1084,8 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Public facts about a session: whether it's live, its languages (for the
-        // listener's language list and the display columns), and whether audio is
+    // Public facts about a session: whether it's live, its languages (for the
+    // listener's language list and the display columns), and whether audio is
     // flowing. Nothing here needs more than the session code.
     else if (req.method === 'GET' && (pathname === '/session/info' || pathname === '/zoom/session-status')) {
         const code = String(parsedUrl.searchParams.get('code') || '').toUpperCase();
@@ -1043,11 +1095,12 @@ const server = http.createServer((req, res) => {
             exists: live,
             languages: live ? s.languages : [],
             audio: live ? s.audio : [],
-            audioConnected: !!findPipelineBySession(code)
+            audioConnected: !!findPipelineBySession(code),
+            joinPath: live ? joinPath(code) : null
         });
     }
 
-        // Panel's "Start captions": claim Zoom audio for this session (now, or
+    // Panel's "Start captions": claim Zoom audio for this session (now, or
     // as soon as the stream starts).
     else if (req.method === 'POST' && pathname === '/zoom/connect') {
         readJson(req, (body) => {
@@ -1058,7 +1111,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Panel's "Stop captions": the stream stopping next is a pause, so the
+    // Panel's "Stop captions": the stream stopping next is a pause, so the
     // session stays open for listeners.
     else if (req.method === 'POST' && pathname === '/zoom/pause') {
         readJson(req, (body) => {
@@ -1082,13 +1135,13 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Zoom RTMS webhook:
-        //   endpoint.url_validation -- Zoom's challenge when the URL is saved in
-        //     the Zoom console; we echo back an HMAC-signed token.
-        //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
-        //     meeting's audio stream.
-        //   app_deauthorized -- someone removed the app; delete their settings.
-        //     Also accepted at /zoom/deauthorize, for Zoom's separate
+    // Zoom RTMS webhook:
+    //   endpoint.url_validation -- Zoom's challenge when the URL is saved in
+    //     the Zoom console; we echo back an HMAC-signed token.
+    //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
+    //     meeting's audio stream.
+    //   app_deauthorized -- someone removed the app; delete their settings.
+    //     Also accepted at /zoom/deauthorize, for Zoom's separate
     //     "Deauthorization Notification Endpoint" field.
     else if (req.method === 'POST' && (pathname === '/zoom/rtms-webhook' || pathname === '/zoom/deauthorize')) {
         readRawBody(req, (rawBody) => {
@@ -1142,8 +1195,8 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // OAuth redirect target. Zoom sends the user here (with a one-time
-        // ?code=...) after they click Allow on the app's consent screen. This URL
+    // OAuth redirect target. Zoom sends the user here (with a one-time
+    // ?code=...) after they click Allow on the app's consent screen. This URL
     // must match the redirect URI registered in the Zoom console.
     else if (req.method === 'GET' && pathname === '/zoom/oauth/callback') {
         const code = parsedUrl.searchParams.get('code');
@@ -1190,6 +1243,13 @@ const server = http.createServer((req, res) => {
                 res.end('<p>Something went wrong contacting Zoom.</p>');
             }
         })();
+    }
+
+    // A group's permanent link, e.g. /area61: the normal listener page, which
+    // looks up the group's current session itself (see index.html).
+    else if ((req.method === 'GET' || req.method === 'HEAD') && /^\/[a-z0-9-]{3,32}$/i.test(pathname)
+             && store.findBySlug(pathname.slice(1))) {
+        serveFile(req, res, path.join(__dirname, 'index.html'), 'text/html; charset=UTF-8', APP_PAGE_HEADERS);
     }
 
     else {
