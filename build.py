@@ -110,10 +110,20 @@ docs_body = f'''
   <li>Start your meeting and open <strong>Apps → Recovery Translator</strong>.</li>
   <li>Enter your access code (not needed if your group saved its own key), check the <strong>languages</strong> the meeting needs, check <strong>Audio</strong> for any language people should also hear, and tap <strong>Start session</strong>.</li>
   <li>Allow Zoom to share meeting audio with the app when prompted. Captions appear in the panel within a few seconds.</li>
-  <li>Tap <strong>Post join link to meeting chat</strong>. The message has a line in each session language, so participants can follow along on their own device.</li>
+  <li>Tap <strong>Invite everyone to view captions in Zoom</strong>. Zoom asks each participant whether to open Recovery Translator, where they see the captions right in Zoom (see below). Nobody is forced to open it.</li>
+  <li>Tap <strong>Post join link to meeting chat</strong> too. The message has a line in each session language, so people on phones, or who'd rather use a browser, can follow along and hear spoken translation.</li>
   <li>Use <strong>Pause</strong> to stop sending audio for part of a meeting, and <strong>End session</strong> when you're done. The session also ends when the meeting ends.</li>
 </ol>
-<p>The panel's text-size buttons (A− / A+) and its language buttons change only your own view. Each session belongs to its own meeting: nobody in another meeting can see it, and only the panel in this meeting (or the browser that started it) can pause or end it.</p>
+<p>The panel's text-size buttons (A− / A+) and its language buttons change only your own view. Each session belongs to its own meeting: nobody in another meeting can see it, and only the host or a co-host (or the browser that started it) can pause or end it.</p>
+
+<h3 id="viewers">For attendees: captions in Zoom</h3>
+<p>Attendees don't need an access code, a key, or anything installed in advance. When they open Recovery Translator from the host's invitation, or from <strong>Apps</strong>, they get a captions-only view:</p>
+<ul>
+  <li>Before the host starts, it says captions will appear when the host starts them, and it switches on by itself.</li>
+  <li>They pick a language from the ones the host chose, and change text size. It starts in their own language if the session has it.</li>
+  <li>They can't start, pause, or end anything. Zoom tells us each person's role in the meeting, and only the host and co-hosts get controls.</li>
+  <li>Spoken translation isn't played inside Zoom, so it doesn't mix with the meeting audio. To listen, use the join link on a phone.</li>
+</ul>
 <p><strong>Started the session on the website?</strong> Choose <strong>A Zoom meeting</strong> as the audio source there. The leader screen shows a private <strong>Zoom link code</strong>. In the meeting's panel, enter it under <strong>Started a session in the browser?</strong> Each link code works once.</p>
 
 <h2 id="browser">Using it without Zoom</h2>

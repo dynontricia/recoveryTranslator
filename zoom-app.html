@@ -6,6 +6,8 @@
     <title>Recovery Translator for Zoom</title>
     <!-- Filled in by the server from Zoom's signed context: identifies this meeting. -->
     <meta name="rt-panel-token" content=""/>
+    <!-- "host" (host or co-host) or "viewer": which screens to show. The server enforces it. -->
+    <meta name="rt-panel-role" content=""/>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html, body { height: 100%; }
@@ -80,6 +82,9 @@
             font-size: 12px; font-weight: 400; line-height: 1.45;
         }
         .tip:hover::after, .tip:focus::after { display: block; }
+        /* Viewers (attendees) see captions only. */
+        body.viewer .host-only { display: none !important; }
+        .viewer-wait { text-align: center; color: #4a5568; font-size: 14px; padding: 28px 8px; line-height: 1.5; }
         #link-fields:not([hidden]) { display: flex; flex-direction: column; gap: 6px; }
         .text-link { background: none; border: none; padding: 0; color: #4f46e5; text-decoration: underline;
             font-size: 12px; font-weight: 500; cursor: pointer; flex: 0 0 auto; }
@@ -107,9 +112,8 @@
 <body>
 <div class="top">
     <h1>Recovery Translator</h1>
-    <button class="settings-link" id="settings-btn" onclick="openSettings()" style="display:none">Settings</button>
-    <br/>
     <div class="status pending" id="status">Loading…</div>
+    <button class="settings-link host-only" id="settings-btn" onclick="openSettings()" style="display:none">Settings</button>
 </div>
 
 <!-- Settings: save the group's own Gemini key -->
@@ -133,13 +137,13 @@
 </section>
 
 <!-- A session was started in this meeting (e.g., by a co-host) while the form is open -->
-<div class="banner" id="browser-session-banner" style="display:none">
+<div class="banner host-only" id="browser-session-banner" style="display:none">
     <span id="browser-session-text"></span>
     <button class="btn-primary" onclick="useBrowserSession()">Use it</button>
 </div>
 
 <!-- Start a session from inside Zoom -->
-<form id="start-form" style="display:none" onsubmit="event.preventDefault(); createSessionFromZoom();">
+<form id="start-form" class="host-only" style="display:none" onsubmit="event.preventDefault(); createSessionFromZoom();">
     <h2>Start a session</h2>
     <p class="hint" id="key-note" style="display:none"></p>
     <div id="access-code-row" style="display:flex;flex-direction:column;gap:6px">
@@ -157,7 +161,7 @@
 </form>
 
 <!-- Link a session started in the browser to this meeting -->
-<form id="link-form" style="display:none" onsubmit="event.preventDefault(); linkBrowserSession();">
+<form id="link-form" class="host-only" style="display:none" onsubmit="event.preventDefault(); linkBrowserSession();">
     <button type="button" class="text-link" style="align-self:flex-start" onclick="$('link-fields').hidden = !$('link-fields').hidden">Started the session on the website?</button>
     <div id="link-fields" hidden>
         <label for="link-code">Zoom link code (from the leader screen)</label>
@@ -171,8 +175,9 @@
     <summary id="controls-summary">Session controls</summary>
     <div class="controls-body">
         <div class="join" id="join-info"></div>
-        <button class="btn-primary" id="chat-link-btn" onclick="postLinkToChat()">Post join link to meeting chat</button>
-        <div class="row">
+        <button class="btn-primary host-only" id="chat-link-btn" onclick="postLinkToChat()">Post join link to meeting chat</button>
+        <button class="btn-stop host-only" id="invite-btn" onclick="inviteEveryone()">Invite everyone to view captions in Zoom</button>
+        <div class="row host-only">
             <button class="btn-start" id="start-btn" onclick="startCaptions()">Start captions</button>
             <button class="btn-stop" id="stop-btn" onclick="stopCaptions()" disabled>Pause</button>
             <button class="btn-end" onclick="endSessionFromZoom()">End session</button>
@@ -181,6 +186,11 @@
         <div class="row toggle" id="display-toggle"></div>
     </div>
 </details>
+
+<!-- Viewers, before the host starts a session -->
+<div class="viewer-wait" id="viewer-wait" style="display:none">
+    Captions will appear here when the host starts them.
+</div>
 
 <div id="captions" style="display:none">
     <div class="cap-head">
@@ -206,6 +216,9 @@
     let pendingSession = null;
     // Proves to the server which meeting this panel is in (see server.js).
     const PANEL_TOKEN = document.querySelector('meta[name="rt-panel-token"]').content;
+    // Attendees get a read-only caption viewer; hosts and co-hosts get controls.
+    const IS_HOST = document.querySelector('meta[name="rt-panel-role"]').content === 'host';
+    if (!IS_HOST) document.body.classList.add('viewer');
     let captionsWereRunning = false;
     let textSize = 17;
     try { textSize = parseInt(localStorage.getItem('rt-panel-text-size'), 10) || 17; } catch (e) {}
@@ -268,7 +281,7 @@
 
     async function init() {
         try {
-            const cfg = await sdk.config({ capabilities: ['startRTMS', 'stopRTMS', 'sendMessageToChat', 'openUrl'], version: '0.16' });
+            const cfg = await sdk.config({ capabilities: ['startRTMS', 'stopRTMS', 'sendMessageToChat', 'openUrl', 'sendAppInvitationToAllParticipants'], version: '0.16' });
             // Zoom lists any API not enabled for this app in the Marketplace settings.
             canOpenUrl = !(cfg.unsupportedApis || []).includes('openUrl');
         } catch (err) {
@@ -281,7 +294,7 @@
         }
         applyTextSize();
         renderLanguagePicker($('lang-picker'));
-        await loadConfig();
+        if (IS_HOST) await loadConfig();
         // Remember the access code between meetings.
         try { $('access-code').value = localStorage.getItem('rt-access-code') || ''; } catch (e) {}
 
@@ -389,6 +402,7 @@
         clearInterval(audioTimer);
         $('session-view').style.display = 'none';
         $('captions').style.display = 'none';
+        if (!IS_HOST) { showViewerWaiting(); return; }
         $('start-form').style.display = '';
         $('link-form').style.display = '';
         $('create-btn').disabled = false;
@@ -404,6 +418,19 @@
                 $('browser-session-banner').style.display = '';
             }
         }, 3000);
+    }
+
+    // Viewers: wait for the host's session, then show it on its own.
+    function showViewerWaiting() {
+        $('viewer-wait').style.display = '';
+        setStatus('pending', 'Waiting for the host');
+        clearInterval(lookTimer);
+        const look = async () => {
+            const s = await fetchCurrentSession();
+            if (s && !sessionCode) showSession(s);
+        };
+        look();
+        lookTimer = setInterval(look, 3000);
     }
 
     function useBrowserSession() {
@@ -470,14 +497,19 @@
         sessionCode = data.sessionCode;
         sessionLanguages = data.languages && data.languages.length ? data.languages : ['en'];
         // Start with English if the session has it, else its first language.
-        shown = [sessionLanguages.includes('en') ? 'en' : sessionLanguages[0]];
+        // Start with the viewer's own language if the session has it, then
+        // English, then the session's first language.
+        const own = (navigator.language || '').slice(0, 2);
+        shown = [sessionLanguages.includes(own) && !IS_HOST ? own
+            : sessionLanguages.includes('en') ? 'en' : sessionLanguages[0]];
         buildLanguageToggles();
 
         const joinUrl = `${location.origin}?join=${sessionCode}`;
         $('join-info').innerHTML = `Session <strong>${sessionCode}</strong> · listeners join at <a href="${joinUrl}" target="_blank">${joinUrl}</a>`;
         $('session-view').style.display = '';
         $('session-view').open = true;
-        $('controls-summary').textContent = `Session ${sessionCode} · controls`;
+        $('viewer-wait').style.display = 'none';
+        $('controls-summary').textContent = IS_HOST ? `Session ${sessionCode} · controls` : 'Languages and join link';
         captionsWereRunning = false;
         $('captions').style.display = '';
         subscribe();
@@ -527,6 +559,21 @@
         }
     }
 
+    // Asks Zoom to prompt everyone in the meeting to open the panel, where
+    // they get the caption viewer. Nobody is forced; it's an invitation.
+    async function inviteEveryone() {
+        const btn = $('invite-btn');
+        btn.disabled = true;
+        try {
+            await sdk.sendAppInvitationToAllParticipants();
+            setStatus('ok', 'Invitation sent to everyone in the meeting.');
+        } catch (err) {
+            setStatus('err', 'Zoom could not send the invitation. Post the join link to chat instead.');
+        } finally {
+            setTimeout(() => { btn.disabled = false; }, 4000);
+        }
+    }
+
     async function stopCaptions() {
         // Tell the server this is a pause, so the session stays open.
         try {
@@ -568,10 +615,11 @@
         $('start-btn').disabled = running;
         $('stop-btn').disabled = !running;
         if (running) setStatus('ok', 'Captions live');
-        else if (sessionCode) setStatus('pending', 'Paused — tap Start captions');
-        // Give the captions the room once they're live; reopen to see controls.
-        if (running && !captionsWereRunning) $('session-view').open = false;
-        if (!running && captionsWereRunning) $('session-view').open = true;
+        else if (sessionCode) setStatus('pending', IS_HOST ? 'Paused — tap Start captions' : 'Paused by the host');
+        // Hosts: give the captions the room once they're live; reopen to see
+        // controls. Viewers keep their language buttons where they are.
+        if (IS_HOST && running && !captionsWereRunning) $('session-view').open = false;
+        if (IS_HOST && !running && captionsWereRunning) $('session-view').open = true;
         captionsWereRunning = running;
     }
 
