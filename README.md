@@ -118,7 +118,9 @@ Every Zoom webhook request is checked against Zoom's signature (`x-zm-signature`
 
 Each Zoom session belongs to one meeting. When Zoom opens the panel, it sends a signed, encrypted `x-zoom-app-context` header naming the user and meeting. The server gives the panel a short-lived token for that meeting, and a meeting's audio stream (`meeting_uuid` in the RTMS webhook) only attaches to a session from the same meeting. Two groups captioning at the same time never see or hear each other's sessions.
 
-Only the session's own leader can pause, connect, or end it: the panel in the same meeting, or the browser that started it (it holds a secret leader token). The session code that listeners use is not enough. Logs show meetings only as a short one-way hash, such as `meeting #1a1098c1`.
+**Viewer mode.** Zoom's signed context also says each person's meeting role (`attendrole`). Hosts and co-hosts get the full panel. Everyone else (attendees, panelists, guests who haven't installed the app, or an unexpected or missing role) gets a captions-only viewer: the session's languages, live captions, and text size, with no access code, start form, settings, or controls. The server enforces this on every call, not just the page. The host's **Invite everyone to view captions in Zoom** button uses Zoom's `sendAppInvitationToAllParticipants`.
+
+Only the session's own leader can pause, connect, or end it: the host or a co-host in the panel in the same meeting, or the browser that started it (it holds a secret leader token). The session code that listeners use is not enough. Logs show meetings only as a short one-way hash, such as `meeting #1a1098c1`.
 
 ## Privacy
 

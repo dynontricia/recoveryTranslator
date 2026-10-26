@@ -571,7 +571,19 @@ function logContextShape(ctx) {
     } catch (e) { /* diagnostics must never break the panel */ }
 }
 
-// Returns { uid, mid } from a valid, unexpired context header, else null.
+// Who may run a session from the panel. Zoom's signed context says each
+// person's meeting role in `attendrole`. Anything that isn't clearly the host
+// or a co-host -- an attendee, a panelist, a guest, a missing or unexpected
+// value -- gets the read-only viewer. A mistake can hide controls from a host,
+// never give them to an attendee.
+const HOST_ROLES = new Set(['host', 'cohost', 'co-host']);
+function panelRole(ctx) {
+    const r = String(ctx.attendrole || '').toLowerCase();
+    return ctx.uid && HOST_ROLES.has(r) ? 'host' : 'viewer';
+}
+
+// Returns { uid, mid, role } from a valid, unexpired context header, else
+// null. Guests who haven't installed the app may have no uid; they can view.
 function readZoomAppContext(req) {
     const header = req.headers['x-zoom-app-context'];
     const secret = process.env.ZOOM_CLIENT_SECRET;
@@ -582,8 +594,11 @@ function readZoomAppContext(req) {
         // Zoom's timestamps may be seconds or milliseconds; accept either.
         const exp = Number(ctx.exp);
         if (exp && (exp < 1e12 ? exp * 1000 : exp) < Date.now()) return null;
-        if (!ctx.uid) return null;
-        return { uid: String(ctx.uid), mid: ctx.mid ? String(ctx.mid) : null };
+        return {
+            uid: ctx.uid ? String(ctx.uid) : null,
+            mid: ctx.mid ? String(ctx.mid) : null,
+            role: panelRole(ctx)
+        };
     } catch (err) {
         console.warn('Zoom app context rejected:', err.message);
         return null;
@@ -596,8 +611,8 @@ function readZoomAppContext(req) {
 const PANEL_TOKEN_KEY = crypto.randomBytes(32);
 const PANEL_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 
-function signPanelToken(uid, mid) {
-    const body = Buffer.from(JSON.stringify({ uid, mid, exp: Date.now() + PANEL_TOKEN_TTL_MS })).toString('base64url');
+function signPanelToken(uid, mid, role) {
+    const body = Buffer.from(JSON.stringify({ uid, mid, role, exp: Date.now() + PANEL_TOKEN_TTL_MS })).toString('base64url');
     return body + '.' + crypto.createHmac('sha256', PANEL_TOKEN_KEY).update(body).digest('base64url');
 }
 
@@ -610,16 +625,33 @@ function readPanelToken(req) {
     try {
         const data = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
         if (!data.exp || data.exp < Date.now()) return null;
-        return { uid: data.uid, mid: data.mid };
+        return { uid: data.uid, mid: data.mid, role: data.role === 'host' ? 'host' : 'viewer' };
     } catch (e) { return null; }
 }
 
-// Who may pause, connect, or end a session: the panel in that session's own
-// meeting, or whoever holds its leader token (the browser that started it).
-// Knowing the session code -- which every listener has -- is not enough.
+// A panel token from a host or co-host (see panelRole).
+function readHostPanel(req) {
+    const panel = readPanelToken(req);
+    return panel && panel.role === 'host' && panel.uid ? panel : null;
+}
+
+// For host-only endpoints: the host panel, or null after answering 401 (not
+// from a Zoom panel at all) or 403 (a viewer).
+function requireHostPanel(req, res, what) {
+    const host = readHostPanel(req);
+    if (host) return host;
+    if (!readPanelToken(req)) sendJson(res, 401, { error: 'Open this from inside a Zoom meeting.' });
+    else sendJson(res, 403, { error: `Only the host or a co-host can ${what}.` });
+    return null;
+}
+
+// Who may pause, connect, or end a session: the host or a co-host, in the
+// panel in that session's own meeting, or whoever holds its leader token (the
+// browser that started it). Viewers and the session code -- which every
+// listener has -- are not enough.
 function canControl(req, session, body) {
     if (!session) return false;
-    const panel = readPanelToken(req);
+    const panel = readHostPanel(req);
     if (panel && panel.mid && session.meetingId && panel.mid === session.meetingId) return true;
     return safeEqual(body && body.leaderToken, session.leaderToken);
 }
@@ -649,7 +681,7 @@ function resolveCredentials(req, body) {
         if (g) return { geminiKey: process.env.GEMINI_API_KEY || null };
         return { error: 'Invalid access code', status: 401 };
     }
-    const panel = readPanelToken(req);
+    const panel = readHostPanel(req);
     const g = panel && store.findByZoomUser(panel.uid);
     if (g && g.active && g.geminiKey) {
         const key = store.geminiKeyFor(g);
@@ -831,13 +863,14 @@ const server = http.createServer((req, res) => {
         serveFile(req, res, path.join(__dirname, file), contentType, headers);
     }
 
-        // The Zoom panel. Zoom's signed context header says who and which meeting;
-        // the page gets a panel token for it. Opened outside a Zoom meeting, the
+    // The Zoom panel. Zoom's signed context header says who and which meeting;
+    // the page gets a panel token for it. Opened outside a Zoom meeting, the
     // token is empty and the panel says to open it from inside one.
     else if ((req.method === 'GET' || req.method === 'HEAD') && (pathname === '/zoom-app' || pathname === '/zoom-app.html')) {
         const ctx = readZoomAppContext(req);
-        const token = ctx && ctx.mid ? signPanelToken(ctx.uid, ctx.mid) : '';
-        if (ctx) console.log(`Zoom panel opened (meeting ${meetingTag(ctx.mid)})`);
+        const token = ctx && ctx.mid ? signPanelToken(ctx.uid, ctx.mid, ctx.role) : '';
+        const role = ctx && ctx.mid ? ctx.role : '';
+        if (ctx) console.log(`Zoom panel opened (meeting ${meetingTag(ctx.mid)}, ${ctx.role})`);
         fs.readFile(path.join(__dirname, 'zoom-app.html'), 'utf8', (err, html) => {
             if (err) { res.writeHead(500); res.end(); return; }
             res.writeHead(200, {
@@ -845,8 +878,11 @@ const server = http.createServer((req, res) => {
                 'Cache-Control': 'no-store',
                 ...ZOOM_APP_HEADERS
             });
+            // The role only picks which screens the panel shows; the server
+            // checks it again from the signed token on every call.
             res.end(req.method === 'HEAD' ? undefined
-                : html.replace('<meta name="rt-panel-token" content=""/>', `<meta name="rt-panel-token" content="${token}"/>`));
+                : html.replace('<meta name="rt-panel-token" content=""/>', `<meta name="rt-panel-token" content="${token}"/>`)
+                      .replace('<meta name="rt-panel-role" content=""/>', `<meta name="rt-panel-role" content="${role}"/>`));
         });
     }
 
@@ -860,8 +896,13 @@ const server = http.createServer((req, res) => {
                 return;
             }
             if (!creds.geminiKey) { sendJson(res, 500, { error: 'The server has no Gemini key set up.' }); return; }
-            // Started from the Zoom panel: the session belongs to that meeting.
+            // Started from the Zoom panel: the session belongs to that meeting,
+            // and only its host or a co-host can start it.
             const panel = readPanelToken(req);
+            if (panel && panel.role !== 'host') {
+                sendJson(res, 403, { error: 'Only the host or a co-host can start captions.' });
+                return;
+            }
             const code = createSession(parseLanguageChoice(body), body.audioSource, panel && panel.mid, creds.geminiKey);
             const s = sessions[code];
             const zoomAudio = s.audioSource === 'zoom' && s.meetingId ? connectZoomAudio(code) : undefined;
@@ -891,11 +932,11 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // The Zoom panel's Settings screen: this Zoom user's saved settings.
+    // The Zoom panel's Settings screen: this Zoom user's saved settings.
     // Never returns the key itself -- only its last four characters.
     else if (req.method === 'GET' && pathname === '/zoom/config') {
-        const panel = readPanelToken(req);
-        if (!panel) { sendJson(res, 401, { error: 'Open this from inside a Zoom meeting.' }); return; }
+        const panel = requireHostPanel(req, res, 'change settings');
+        if (!panel) return;
         const g = store.findByZoomUser(panel.uid);
         sendJson(res, 200, {
             storeEnabled: store.enabled(),
@@ -904,12 +945,12 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Saves (or replaces) this Zoom user's Gemini key, after Google confirms
+    // Saves (or replaces) this Zoom user's Gemini key, after Google confirms
     // it works. The first save also returns a website access code -- once.
     else if (req.method === 'POST' && pathname === '/zoom/config') {
         readJson(req, async (body) => {
-            const panel = readPanelToken(req);
-            if (!panel) { sendJson(res, 401, { error: 'Open this from inside a Zoom meeting.' }); return; }
+            const panel = requireHostPanel(req, res, 'change settings');
+            if (!panel) return;
             if (!store.enabled()) { sendJson(res, 503, { error: "This server isn't set up to save keys." }); return; }
             const check = await validateGeminiKey(body.geminiKey);
             if (!check.ok) { sendJson(res, 400, { error: check.error }); return; }
@@ -921,8 +962,8 @@ const server = http.createServer((req, res) => {
 
     // "Remove saved key": deletes this Zoom user's record entirely.
     else if (req.method === 'POST' && pathname === '/zoom/config/delete') {
-        const panel = readPanelToken(req);
-        if (!panel) { sendJson(res, 401, { error: 'Open this from inside a Zoom meeting.' }); return; }
+        const panel = requireHostPanel(req, res, 'change settings');
+        if (!panel) return;
         const removed = store.deleteByZoomUser(panel.uid);
         console.log(`Settings removed from the Zoom app (${removed} record(s))`);
         sendJson(res, 200, { removed });
@@ -961,6 +1002,7 @@ const server = http.createServer((req, res) => {
     }
 
     // Which session the Zoom panel should show: only its own meeting's.
+    // Hosts and viewers alike -- viewers watch the same session's captions.
     else if (req.method === 'GET' && pathname === '/zoom/current-session') {
         const panel = readPanelToken(req);
         if (!panel) { sendJson(res, 401, { error: 'Open this from inside a Zoom meeting.' }); return; }
@@ -968,12 +1010,12 @@ const server = http.createServer((req, res) => {
         sendJson(res, 200, code ? sessionSummary(code) : { sessionCode: null });
     }
 
-        // Links a session started in the browser to the meeting whose panel sent
+    // Links a session started in the browser to the meeting whose panel sent
     // the one-time link code the browser showed its leader.
     else if (req.method === 'POST' && pathname === '/zoom/link') {
         readJson(req, (body) => {
-            const panel = readPanelToken(req);
-            if (!panel || !panel.mid) { sendJson(res, 401, { error: 'Open this from inside a Zoom meeting.' }); return; }
+            const panel = requireHostPanel(req, res, 'link a session');
+            if (!panel) return;
             const linkCode = String(body.linkCode || '').trim().toUpperCase();
             const entry = linkCode && Object.entries(sessions)
                 .find(([, s]) => !s.ended && s.linkCode && safeEqual(s.linkCode, linkCode));
@@ -986,8 +1028,8 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Public facts about a session: whether it's live, its languages (for the
-        // listener's language list and the display columns), and whether audio is
+    // Public facts about a session: whether it's live, its languages (for the
+    // listener's language list and the display columns), and whether audio is
     // flowing. Nothing here needs more than the session code.
     else if (req.method === 'GET' && (pathname === '/session/info' || pathname === '/zoom/session-status')) {
         const code = String(parsedUrl.searchParams.get('code') || '').toUpperCase();
@@ -1001,7 +1043,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Panel's "Start captions": claim Zoom audio for this session (now, or
+    // Panel's "Start captions": claim Zoom audio for this session (now, or
     // as soon as the stream starts).
     else if (req.method === 'POST' && pathname === '/zoom/connect') {
         readJson(req, (body) => {
@@ -1012,7 +1054,7 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Panel's "Stop captions": the stream stopping next is a pause, so the
+    // Panel's "Stop captions": the stream stopping next is a pause, so the
     // session stays open for listeners.
     else if (req.method === 'POST' && pathname === '/zoom/pause') {
         readJson(req, (body) => {
@@ -1036,13 +1078,13 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // Zoom RTMS webhook:
-        //   endpoint.url_validation -- Zoom's challenge when the URL is saved in
-        //     the Zoom console; we echo back an HMAC-signed token.
-        //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
-        //     meeting's audio stream.
-        //   app_deauthorized -- someone removed the app; delete their settings.
-        //     Also accepted at /zoom/deauthorize, for Zoom's separate
+    // Zoom RTMS webhook:
+    //   endpoint.url_validation -- Zoom's challenge when the URL is saved in
+    //     the Zoom console; we echo back an HMAC-signed token.
+    //   meeting.rtms_started / meeting.rtms_stopped -- join or leave the
+    //     meeting's audio stream.
+    //   app_deauthorized -- someone removed the app; delete their settings.
+    //     Also accepted at /zoom/deauthorize, for Zoom's separate
     //     "Deauthorization Notification Endpoint" field.
     else if (req.method === 'POST' && (pathname === '/zoom/rtms-webhook' || pathname === '/zoom/deauthorize')) {
         readRawBody(req, (rawBody) => {
@@ -1096,8 +1138,8 @@ const server = http.createServer((req, res) => {
         });
     }
 
-        // OAuth redirect target. Zoom sends the user here (with a one-time
-        // ?code=...) after they click Allow on the app's consent screen. This URL
+    // OAuth redirect target. Zoom sends the user here (with a one-time
+    // ?code=...) after they click Allow on the app's consent screen. This URL
     // must match the redirect URI registered in the Zoom console.
     else if (req.method === 'GET' && pathname === '/zoom/oauth/callback') {
         const code = parsedUrl.searchParams.get('code');
