@@ -73,7 +73,8 @@
         return DEFAULT;
     }
 
-    root.renderLanguagePicker = function (container) {
+    // tipText: the explanation shown by the (i) next to the "Languages" header.
+    root.renderLanguagePicker = function (container, tipText) {
         const choice = savedChoice();
         const rows = root.LANGUAGE_ORDER.map(code => {
             const L = root.LANGUAGES[code];
@@ -82,7 +83,9 @@
                 `<td><input type="checkbox" aria-label="${L.name} captions" data-lang="${code}" data-kind="captions"${choice.languages.includes(code) ? ' checked' : ''}></td>` +
                 `<td><input type="checkbox" aria-label="${L.name} audio" data-lang="${code}" data-kind="audio"${choice.audio.includes(code) ? ' checked' : ''}></td></tr>`;
         }).join('');
-        container.innerHTML = `<table class="lang-picker"><thead><tr><th>Language</th><th>Captions</th><th>Audio</th></tr></thead><tbody>${rows}</tbody></table>`;
+        const tip = tipText ? ' <span class="tip" tabindex="0" aria-label="About languages">i</span>' : '';
+        container.innerHTML = `<table class="lang-picker"><thead><tr><th>Languages${tip}</th><th>Captions</th><th>Audio</th></tr></thead><tbody>${rows}</tbody></table>`;
+        if (tipText) container.querySelector('.tip').dataset.tip = tipText; // set as data, not HTML
         container.addEventListener('change', (e) => {
             const box = e.target;
             if (!box.dataset || !box.dataset.lang) return;

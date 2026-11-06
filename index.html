@@ -83,6 +83,18 @@
         .lang-picker th:not(:first-child), .lang-picker td:not(:first-child) { text-align: center; width: 76px; }
         .lang-picker td { padding: 6px; border-bottom: 1px solid #f0f4f8; }
         .lang-picker input { width: 18px; height: 18px; margin: 0; }
+        /* Hover or tap the (i) in the Languages header for an explanation. */
+        .tip {
+            position: relative; display: inline-flex; align-items: center; justify-content: center;
+            width: 16px; height: 16px; margin-left: 4px; vertical-align: middle; border-radius: 50%;
+            background: #e2e8f0; color: #4a5568; font-size: 11px; font-weight: 700; cursor: help; outline: none;
+        }
+        .tip::after {
+            content: attr(data-tip); display: none; position: absolute; top: 22px; left: -8px; z-index: 10;
+            width: 260px; padding: 8px 10px; border-radius: 6px; background: #1a202c; color: #fff;
+            font-size: 12px; font-weight: 400; line-height: 1.45; text-align: left;
+        }
+        .tip:hover::after, .tip:focus::after { display: block; }
 
         .leader-live-layout { display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start; }
         .leader-left { flex: 0 0 300px; display: flex; flex-direction: column; }
@@ -170,9 +182,7 @@
             <label>Access code</label>
             <input type="password" id="access-code" placeholder="Enter access code"/>
 
-            <label>Languages</label>
-            <div id="lang-picker"></div>
-            <p class="small" style="text-align:left;margin:0 0 16px">Everyone can read captions in each language you check, whatever language the speaker uses. <strong>Audio</strong> also reads it aloud. Each caption language is one more live translation, which adds to the Gemini cost, so check only what your meeting needs.</p>
+            <div id="lang-picker" style="margin-bottom:16px"></div>
 
             <label>Where is the audio coming from?</label>
             <select id="audio-source" onchange="updateAudioSourceFields()">
@@ -890,7 +900,8 @@
     // ── Startup: fresh visits land on the main page ───────
     window.addEventListener('load', () => {
         const urlParams = new URLSearchParams(location.search);
-        renderLanguagePicker(document.getElementById('lang-picker'));
+        renderLanguagePicker(document.getElementById('lang-picker'),
+            'Everyone can read captions in each checked language, whatever language the speaker uses. Audio also reads it aloud. Each language is one more live translation, which adds to the Gemini cost, so check only what your meeting needs.');
         // A group's permanent link, e.g. /area61.
         const slug = location.pathname.match(/^\/([a-z0-9-]{3,32})$/i);
         if (slug) { openGroupLink(slug[1].toLowerCase()); return; }
