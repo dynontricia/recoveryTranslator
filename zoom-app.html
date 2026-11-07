@@ -69,8 +69,7 @@
         }
         .new-code strong { font-size: 18px; letter-spacing: 2px; }
         /* Hover or tap the (i) for an explanation, so the panel stays uncluttered. */
-        .label-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-        .label-row label { margin-top: 0; }
+        .lang-picker th .tip { margin-left: 4px; vertical-align: middle; }
         .tip {
             position: relative; display: inline-flex; align-items: center; justify-content: center;
             width: 16px; height: 16px; border-radius: 50%; background: #e2e8f0; color: #4a5568;
@@ -151,12 +150,7 @@
         <input type="password" id="access-code" autocomplete="off"/>
     </div>
 
-    <div class="label-row">
-        <label>Languages</label>
-        <span class="tip" tabindex="0" aria-label="About languages"
-              data-tip="Captions appear in each checked language, using this meeting's audio. Audio also reads that language aloud for listeners. Each language is one more live translation, so check only what your meeting needs.">i</span>
-    </div>
-    <div id="lang-picker"></div>
+    <div id="lang-picker" style="margin-top:6px"></div>
     <button type="submit" class="btn-primary" id="create-btn" style="margin-top:6px">Start session</button>
 </form>
 
@@ -295,7 +289,8 @@
             return;
         }
         applyTextSize();
-        renderLanguagePicker($('lang-picker'));
+        renderLanguagePicker($('lang-picker'),
+            "Captions appear in each checked language, using this meeting's audio. Audio also reads that language aloud for listeners. Each language is one more live translation, so check only what your meeting needs.");
         if (IS_HOST) await loadConfig();
         // Remember the access code between meetings.
         try { $('access-code').value = localStorage.getItem('rt-access-code') || ''; } catch (e) {}
